@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 
-export const CRM_SESSION_COOKIE = "chengming_crm_session";
+export const CRM_SESSION_COOKIE = "qipei_crm_session";
 
 const DEFAULT_MCP_URL = "https://enterprise-training-mcp.coolify.eeo-inc.com";
 

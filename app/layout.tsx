@@ -6,7 +6,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "澄明 CRM｜销售经营平台",
+  title: "企培 CRM｜销售经营平台",
   description: "以客户事实驱动任务、商机与预测的智能销售经营平台。",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
