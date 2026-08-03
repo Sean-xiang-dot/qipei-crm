@@ -5,8 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 type View = "workbench" | "tasks" | "customers" | "opportunities" | "activities" | "insights";
 
 const navigation: { id: View; label: string; mark: string; badge?: string }[] = [
-  { id: "workbench", label: "今日工作台", mark: "⌂" },
-  { id: "tasks", label: "任务中心", mark: "✓", badge: "8" },
+  { id: "workbench", label: "今日工作台", mark: "今" },
+  { id: "tasks", label: "任务中心", mark: "任", badge: "8" },
   { id: "customers", label: "客户", mark: "客" },
   { id: "opportunities", label: "商机", mark: "机", badge: "3" },
   { id: "activities", label: "销售活动", mark: "活" },
@@ -104,7 +104,7 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><span className="brand-glyph">CM</span><div><strong>澄明</strong><small>销售经营平台</small></div></div>
+        <div className="brand"><span className="brand-glyph">CRM</span><div><strong>澄明 CRM</strong><small>销售经营平台</small></div></div>
         <nav className="main-nav" aria-label="主导航">
           <p className="nav-label">工作空间</p>
           {navigation.map((item) => (
@@ -141,7 +141,7 @@ export default function Home() {
 }
 
 function CrmLogin({ state, message, onLogin }: { state: "loading" | "anonymous" | "authorizing" | "error"; message?: string; onLogin: () => void }) {
-  return <main className="login-shell"><section className="login-panel"><div className="login-brand"><span>CM</span><div><strong>澄明</strong><small>企业培训 CRM 工作台</small></div></div><div className="login-visual"><i /><i /><i /><span>CRM</span></div><div className="login-copy"><span className="eyebrow">企业培训事业部</span><h1>用你的 CRM 身份<br />进入销售经营平台</h1><p>系统通过企培 CRM MCP 完成销售易 OAuth 授权。每个人使用自己的 CRM 权限，客户和商机数据范围不会越过企培组织边界。</p><div className="login-security"><div><b>01</b><span><strong>CRM 原生身份</strong><small>不使用 ChatGPT 账号作为业务身份</small></span></div><div><b>02</b><span><strong>会话安全隔离</strong><small>Token 仅保存在 HttpOnly 会话中</small></span></div><div><b>03</b><span><strong>企培数据边界</strong><small>查询与写回均由 MCP 服务端校验</small></span></div></div>{state === "loading" ? <button className="crm-login-button" disabled><i />正在检查 CRM 登录状态…</button> : state === "authorizing" ? <button className="crm-login-button" disabled><i className="spinner" />请在新窗口完成销售易授权</button> : <button className="crm-login-button" onClick={onLogin}>使用 CRM 账号登录 <span>→</span></button>}{state === "error" && <div className="login-error">{message}<button onClick={onLogin}>重新尝试</button></div>}<small className="login-footnote">认证服务：Enterprise Training CRM MCP · 销售易 OAuth</small></div></section></main>;
+  return <main className="login-shell"><section className="login-panel"><div className="login-brand"><span>CRM</span><div><strong>澄明 CRM</strong><small>企业培训销售经营平台</small></div></div><div className="login-visual"><i /><i /><i /><span><b>澄明</b><small>CRM</small></span></div><div className="login-copy"><span className="eyebrow">企业培训事业部</span><h1>用你的 CRM 身份<br />进入销售经营平台</h1><p>系统通过企培 CRM MCP 完成销售易 OAuth 授权。每个人使用自己的 CRM 权限，客户和商机数据范围不会越过企培组织边界。</p><div className="login-security"><div><b>01</b><span><strong>CRM 原生身份</strong><small>不使用 ChatGPT 账号作为业务身份</small></span></div><div><b>02</b><span><strong>会话安全隔离</strong><small>Token 仅保存在 HttpOnly 会话中</small></span></div><div><b>03</b><span><strong>企培数据边界</strong><small>查询与写回均由 MCP 服务端校验</small></span></div></div>{state === "loading" ? <button className="crm-login-button" disabled><i />正在检查 CRM 登录状态…</button> : state === "authorizing" ? <button className="crm-login-button" disabled><i className="spinner" />请在新窗口完成销售易授权</button> : <button className="crm-login-button" onClick={onLogin}>使用 CRM 账号登录 <span>→</span></button>}{state === "error" && <div className="login-error">{message}<button onClick={onLogin}>重新尝试</button></div>}<small className="login-footnote">认证服务：Enterprise Training CRM MCP · 销售易 OAuth</small></div></section></main>;
 }
 
 function Workbench({ userName, tasks, onCompose, onFinish, onJump }: { userName: string; tasks: typeof initialTasks; onCompose: () => void; onFinish: (id: number) => void; onJump: (view: View) => void }) {
