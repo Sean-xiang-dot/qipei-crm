@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type View = "workbench" | "tasks" | "customers" | "opportunities" | "activities" | "insights";
 
@@ -34,6 +34,7 @@ const opportunities = [
 ];
 
 export default function Home() {
+  const [auth, setAuth] = useState<{ state: "loading" | "anonymous" | "authorizing" | "authenticated" | "error"; userId?: string; userName?: string; message?: string }>({ state: "loading" });
   const [view, setView] = useState<View>("workbench");
   const [taskTab, setTaskTab] = useState("待我处理");
   const [tasks, setTasks] = useState(initialTasks);
@@ -43,6 +44,44 @@ export default function Home() {
 
   const title = navigation.find((item) => item.id === view)?.label ?? "今日工作台";
   const visibleTasks = useMemo(() => taskTab === "全部任务" ? tasks : taskTab === "已完成" ? [] : tasks, [taskTab, tasks]);
+
+  useEffect(() => {
+    fetch("/api/crm-auth/status", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data) => setAuth(data.authenticated ? { state: "authenticated", ...data.session } : { state: "anonymous" }))
+      .catch(() => setAuth({ state: "error", message: "暂时无法连接企培 CRM MCP" }));
+  }, []);
+
+  async function startCrmLogin() {
+    setAuth({ state: "authorizing" });
+    try {
+      const response = await fetch("/api/crm-auth/start", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "无法启动 CRM 登录");
+      const loginWindow = window.open(data.authorizeUrl, "crm-oauth", "popup=yes,width=760,height=760");
+      if (!loginWindow) window.location.href = data.authorizeUrl;
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1600));
+        const poll = await fetch(`/api/crm-auth/poll?loginId=${encodeURIComponent(data.loginId)}`, { cache: "no-store" });
+        const result = await poll.json();
+        if (!poll.ok) throw new Error(result.error || "CRM 登录失败");
+        if (result.status === "authenticated") {
+          loginWindow?.close();
+          setAuth({ state: "authenticated", userId: result.userId, userName: result.userName });
+          return;
+        }
+        if (result.status === "expired") throw new Error("CRM 授权已过期，请重新登录");
+      }
+      throw new Error("等待 CRM 授权超时，请重试");
+    } catch (error) {
+      setAuth({ state: "error", message: error instanceof Error ? error.message : "CRM 登录失败" });
+    }
+  }
+
+  async function logout() {
+    await fetch("/api/crm-auth/logout", { method: "POST" });
+    setAuth({ state: "anonymous" });
+  }
 
   function finishTask(id: number) {
     setTasks((items) => items.filter((item) => item.id !== id));
@@ -57,6 +96,10 @@ export default function Home() {
     setComposeStep("done");
     setTimeout(() => setComposerOpen(false), 1400);
   }
+
+  if (auth.state !== "authenticated") return <CrmLogin state={auth.state} message={auth.message} onLogin={startCrmLogin} />;
+
+  const displayName = auth.userName || "CRM 用户";
 
   return (
     <main className="app-shell">
@@ -75,7 +118,7 @@ export default function Home() {
           <div className="focus-meter"><i /></div>
           <p>18 项事实任务已完成 12 项</p>
         </section>
-        <div className="profile"><span className="avatar">顾</span><div><strong>顾然</strong><small>企业培训事业部</small></div><button aria-label="账户菜单">···</button></div>
+        <div className="profile"><span className="avatar">{displayName.slice(0, 1)}</span><div><strong>{displayName}</strong><small>企业培训事业部 · CRM 已认证</small></div><button aria-label="退出 CRM" title="退出 CRM" onClick={logout}>退出</button></div>
       </aside>
 
       <section className="workspace">
@@ -84,7 +127,7 @@ export default function Home() {
           <div className="top-actions"><label className="search"><span>⌕</span><input aria-label="搜索" placeholder="搜索客户、联系人或商机" /></label><button className="notification" aria-label="通知">◌<i /></button><button className="primary-button" onClick={openComposer}><span>＋</span> 记录客户进展</button></div>
         </header>
 
-        {view === "workbench" && <Workbench tasks={tasks} onCompose={openComposer} onFinish={finishTask} onJump={setView} />}
+        {view === "workbench" && <Workbench userName={displayName} tasks={tasks} onCompose={openComposer} onFinish={finishTask} onJump={setView} />}
         {view === "tasks" && <TaskCenter tasks={visibleTasks} tab={taskTab} setTab={setTaskTab} onFinish={finishTask} onCompose={openComposer} />}
         {view === "customers" && <CustomerList onCompose={openComposer} />}
         {view === "opportunities" && <OpportunityList onCompose={openComposer} />}
@@ -97,10 +140,14 @@ export default function Home() {
   );
 }
 
-function Workbench({ tasks, onCompose, onFinish, onJump }: { tasks: typeof initialTasks; onCompose: () => void; onFinish: (id: number) => void; onJump: (view: View) => void }) {
+function CrmLogin({ state, message, onLogin }: { state: "loading" | "anonymous" | "authorizing" | "error"; message?: string; onLogin: () => void }) {
+  return <main className="login-shell"><section className="login-panel"><div className="login-brand"><span>CM</span><div><strong>澄明</strong><small>企业培训 CRM 工作台</small></div></div><div className="login-visual"><i /><i /><i /><span>CRM</span></div><div className="login-copy"><span className="eyebrow">企业培训事业部</span><h1>用你的 CRM 身份<br />进入销售经营平台</h1><p>系统通过企培 CRM MCP 完成销售易 OAuth 授权。每个人使用自己的 CRM 权限，客户和商机数据范围不会越过企培组织边界。</p><div className="login-security"><div><b>01</b><span><strong>CRM 原生身份</strong><small>不使用 ChatGPT 账号作为业务身份</small></span></div><div><b>02</b><span><strong>会话安全隔离</strong><small>Token 仅保存在 HttpOnly 会话中</small></span></div><div><b>03</b><span><strong>企培数据边界</strong><small>查询与写回均由 MCP 服务端校验</small></span></div></div>{state === "loading" ? <button className="crm-login-button" disabled><i />正在检查 CRM 登录状态…</button> : state === "authorizing" ? <button className="crm-login-button" disabled><i className="spinner" />请在新窗口完成销售易授权</button> : <button className="crm-login-button" onClick={onLogin}>使用 CRM 账号登录 <span>→</span></button>}{state === "error" && <div className="login-error">{message}<button onClick={onLogin}>重新尝试</button></div>}<small className="login-footnote">认证服务：Enterprise Training CRM MCP · 销售易 OAuth</small></div></section></main>;
+}
+
+function Workbench({ userName, tasks, onCompose, onFinish, onJump }: { userName: string; tasks: typeof initialTasks; onCompose: () => void; onFinish: (id: number) => void; onJump: (view: View) => void }) {
   return <div className="page-content dashboard-page">
     <section className="morning-brief">
-      <div><span className="eyebrow">星期一 · 8月3日</span><h2>早上好，顾然。<br />今天先拿到 <b>3 个客户事实</b>。</h2><p>系统已按时效、客户承诺和商机风险排好顺序。你只需要从第一项开始。</p><div className="brief-actions"><button className="primary-button light" onClick={onCompose}>记录一段客户进展</button><button className="text-button" onClick={() => onJump("tasks")}>查看今日完整安排 →</button></div></div>
+      <div><span className="eyebrow">星期一 · 8月3日</span><h2>早上好，{userName}。<br />今天先拿到 <b>3 个客户事实</b>。</h2><p>系统已按时效、客户承诺和商机风险排好顺序。你只需要从第一项开始。</p><div className="brief-actions"><button className="primary-button light" onClick={onCompose}>记录一段客户进展</button><button className="text-button" onClick={() => onJump("tasks")}>查看今日完整安排 →</button></div></div>
       <div className="brief-score"><div className="score-ring"><strong>4</strong><span>需优先处理</span></div><small>其中 1 项已逾期</small></div>
     </section>
 
