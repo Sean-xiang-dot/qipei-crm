@@ -39,7 +39,12 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(dataRoute, /opportunity-stages/);
   assert.match(actionRoute, /customer-lifecycle/);
   assert.match(actionRoute, /create-activity/);
+  assert.match(actionRoute, /create-task/);
+  assert.match(actionRoute, /create-opportunity/);
+  assert.match(actionRoute, /update-opportunity/);
+  assert.match(actionRoute, /create-lead/);
   assert.match(analyzeRoute, /所有建议仍需人工确认/);
   assert.match(page, /潜客.*兴趣.*体验.*验证.*商务推进/s);
-  assert.match(page, /MCP 尚未开放商机阶段与通用任务写回/);
+  assert.match(page, /商机拖拽会在确认事实后更新阶段并创建下一任务/);
+  assert.match(page, /潜客转客户和商机生命周期仍等待独立事务接口/);
 });

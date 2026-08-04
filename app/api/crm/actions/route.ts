@@ -39,6 +39,24 @@ export async function POST(request: NextRequest) {
       entityType: payload.entityType || process.env.CRM_DEFAULT_ACTIVITY_ENTITY_TYPE || "11010011100002",
     }, token);
   }
+  if (action === "create-task") {
+    return forward("/api/tasks", "POST", objectValue(body.payload), token);
+  }
+  if (action === "create-opportunity") {
+    return forward("/api/opportunities", "POST", objectValue(body.payload), token);
+  }
+  if (action === "update-opportunity") {
+    const payload = objectValue(body.payload);
+    const opportunityId = String(payload.opportunityId || "");
+    if (!opportunityId) return NextResponse.json({ error: "缺少 opportunityId" }, { status: 400 });
+    return forward(`/api/opportunities/${encodeURIComponent(opportunityId)}`, "PATCH", {
+      fields: objectValue(payload.fields),
+      ...(payload.expectedUpdatedAt !== undefined ? { expectedUpdatedAt: payload.expectedUpdatedAt } : {}),
+    }, token);
+  }
+  if (action === "create-lead") {
+    return forward("/api/leads", "POST", objectValue(body.payload), token);
+  }
   if (action === "update-record") {
     const payload = objectValue(body.payload);
     const objectApiKey = String(payload.objectApiKey || "");
