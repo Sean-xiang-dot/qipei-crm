@@ -45,6 +45,7 @@ type PipelineCard = {
   lifecycle: LifecycleStatus;
   title: string;
   customer: string;
+  contact?: string;
   customerKind: CustomerKind;
   owner: string;
   product: string;
@@ -58,6 +59,15 @@ type PipelineCard = {
   reviewDate?: string;
 };
 
+type StageMoveDraft = {
+  id: string;
+  targetStage: Exclude<FunnelStage, "lead">;
+  opportunityName: string;
+  contactName: string;
+  evidence: string;
+  nextTask: string;
+};
+
 const funnelStages: { id: FunnelStage; label: string; hint: string; tone: string }[] = [
   { id: "lead", label: "潜客", hint: "确认身份与真实需求", tone: "lead" },
   { id: "interest", label: "兴趣", hint: "确认产品或采购场景", tone: "interest" },
@@ -65,6 +75,13 @@ const funnelStages: { id: FunnelStage; label: string; hint: string; tone: string
   { id: "validation", label: "验证", hint: "取得使用反馈与适配结论", tone: "validation" },
   { id: "commercial", label: "商务推进", hint: "推进报价、合同与付款", tone: "commercial" },
 ];
+
+const stageMoveCriteria: Record<Exclude<FunnelStage, "lead">, string> = {
+  interest: "已确认具体产品方向或真实采购场景",
+  experience: "已安排演示、试用、体验课或样机",
+  validation: "已取得客户实际使用反馈或适配结论",
+  commercial: "已发生报价、合同、付款或明确采购安排",
+};
 
 const initialPipelineCards: PipelineCard[] = [
   { id: "lead-1", kind: "lead", stage: "lead", lifecycle: "active", title: "晨星素质教育", customer: "晨星素质教育", customerKind: "教育机构", owner: "顾然", product: "教学一体机", evidence: "计划升级 3 间教室，咨询演示和安装条件", stageAge: "新线索 · 2 小时", nextTask: "完成首次联系并确认联系人", due: "今天 14:00", taskSource: "线索自动化" },
@@ -265,10 +282,15 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
   const [includePaused, setIncludePaused] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
   const [lifecycleDraft, setLifecycleDraft] = useState<{ id: string; action: "pause" | "close"; reason: string; reviewDate: string } | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropStage, setDropStage] = useState<FunnelStage | null>(null);
+  const [moveDraft, setMoveDraft] = useState<StageMoveDraft | null>(null);
+  const [boardNotice, setBoardNotice] = useState<string | null>(null);
 
   const visibleCards = cards.filter((card) => (customerKind === "全部" || card.customerKind === customerKind) && (includePaused || card.lifecycle === "active"));
   const activeOpportunities = cards.filter((card) => card.kind === "opportunity" && card.lifecycle === "active");
   const pausedCount = cards.filter((card) => card.lifecycle === "paused").length;
+  const moveSource = moveDraft ? cards.find((card) => card.id === moveDraft.id) : undefined;
 
   function formatLaneAmount(items: PipelineCard[]) {
     const amount = items.reduce((sum, item) => sum + Number((item.amount || "0").replace(/[^0-9]/g, "")), 0);
@@ -294,6 +316,53 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     setMenuId(null);
   }
 
+  function requestStageMove(cardId: string, targetStage: FunnelStage) {
+    const card = cards.find((item) => item.id === cardId);
+    setDraggingId(null);
+    setDropStage(null);
+    if (!card || card.stage === targetStage) return;
+    if (card.lifecycle !== "active") {
+      setBoardNotice("暂停或关闭的对象需要先重新激活，才能改变事实阶段。");
+      return;
+    }
+    if (targetStage === "lead") {
+      setBoardNotice("正式商机不能退回潜客；如需停止推进，请使用暂停或关闭。");
+      return;
+    }
+    setBoardNotice(null);
+    setMoveDraft({
+      id: card.id,
+      targetStage,
+      opportunityName: card.kind === "lead" ? `${card.customer} · ${card.product}商机` : card.title,
+      contactName: "",
+      evidence: "",
+      nextTask: card.nextTask,
+    });
+  }
+
+  function submitStageMove(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!moveDraft) return;
+    const source = cards.find((item) => item.id === moveDraft.id);
+    if (!source) return;
+    const converted = source.kind === "lead";
+    setCards((items) => items.map((item) => item.id === moveDraft.id ? {
+      ...item,
+      kind: "opportunity",
+      stage: moveDraft.targetStage,
+      title: moveDraft.opportunityName,
+      contact: converted ? moveDraft.contactName : item.contact,
+      evidence: moveDraft.evidence,
+      nextTask: moveDraft.nextTask,
+      due: "今天",
+      stageAge: converted ? "刚刚由潜客转化" : "刚刚完成阶段校准",
+      taskSource: converted ? "潜客转化" : "阶段拖拽确认",
+    } : item));
+    const targetLabel = funnelStages.find((stage) => stage.id === moveDraft.targetStage)?.label;
+    setBoardNotice(converted ? `已把“${source.customer}”转为客户并创建商机，进入“${targetLabel}”阶段。` : `已将“${source.title}”移动到“${targetLabel}”，并记录阶段依据与下一任务。`);
+    setMoveDraft(null);
+  }
+
   return <div className="page-content opportunity-page">
     <section className="page-intro opportunity-intro"><div><span className="eyebrow">客户经营全景</span><h2>从潜客到成交，用同一张事实看板推进</h2><p>页面连续展示潜客和商机；后台仍保留线索、客户与商机的数据边界。</p></div><button className="primary-button" onClick={onCompose}>＋ 记录一次客户进展</button></section>
 
@@ -316,22 +385,24 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
       <section className="pipeline-toolbar">
         <div className="segmented-filter"><button className={customerKind === "全部" ? "active" : ""} onClick={() => setCustomerKind("全部")}>全部客户</button><button className={customerKind === "教育机构" ? "active" : ""} onClick={() => setCustomerKind("教育机构")}>教育机构</button><button className={customerKind === "个体老师" ? "active" : ""} onClick={() => setCustomerKind("个体老师")}>个体老师</button></div>
         <button className={includePaused ? "pause-filter active" : "pause-filter"} onClick={() => setIncludePaused((value) => !value)}>{includePaused ? "已显示暂停客户" : `显示暂停客户（${pausedCount}）`}</button>
-        <span>潜客不计算商机金额和销售预测</span>
+        <span>拖拽卡片改变阶段 · 潜客不计算销售预测</span>
       </section>
+      {boardNotice && <div className="board-notice" role="status"><span>✓</span><p>{boardNotice}</p><button onClick={() => setBoardNotice(null)}>×</button></div>}
       <section className="pipeline-scroll" aria-label="潜客与商机阶段看板">
         <div className="pipeline-board">
           {funnelStages.map((stage) => {
             const stageCards = visibleCards.filter((card) => card.stage === stage.id && card.lifecycle !== "closed");
-            return <section className={`pipeline-lane ${stage.tone}`} key={stage.id}>
-              <header><div><i /><strong>{stage.label}</strong><em>{stageCards.length}</em></div><b>{stage.id === "lead" ? "不计预测" : formatLaneAmount(stageCards)}</b><small>{stage.hint}</small></header>
+            return <section className={`pipeline-lane ${stage.tone}${dropStage === stage.id ? " is-drop-target" : ""}`} key={stage.id} onDragOver={(event) => { if (!draggingId) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropStage(stage.id); }} onDrop={(event) => { event.preventDefault(); const cardId = event.dataTransfer.getData("text/plain") || draggingId; if (cardId) requestStageMove(cardId, stage.id); }}>
+              <header><div><i /><strong>{stage.label}</strong><em>{stageCards.length}</em></div><b>{stage.id === "lead" ? "不计预测" : formatLaneAmount(stageCards)}</b><small>{dropStage === stage.id ? (stage.id === "lead" ? "商机不能退回潜客" : `放开以移动到“${stage.label}”`) : stage.hint}</small></header>
               <div className="pipeline-card-list">
-                {stageCards.map((card) => <article className={card.lifecycle === "paused" ? "pipeline-card is-paused" : "pipeline-card"} key={card.id}>
-                  <div className="card-topline"><span className={card.kind === "lead" ? "object-pill lead" : "object-pill"}>{card.kind === "lead" ? "潜客" : card.customerKind}</span>{card.lifecycle === "paused" && <span className="paused-pill">暂停培育</span>}<div className="card-menu-wrap"><button className="more-button" aria-label={`管理${card.title}生命周期`} onClick={() => setMenuId(menuId === card.id ? null : card.id)}>•••</button>{menuId === card.id && <div className="card-menu">{card.lifecycle === "paused" ? <button onClick={() => reactivate(card.id)}>重新激活并生成任务</button> : <button onClick={() => setLifecycleDraft({ id: card.id, action: "pause", reason: "客户时间窗口未确定", reviewDate: "2026-08-24" })}>暂停并设置复评日期</button>}<button className="danger" onClick={() => setLifecycleDraft({ id: card.id, action: "close", reason: "客户明确暂不推进", reviewDate: "" })}>关闭并保留原因</button></div>}</div></div>
-                  <h3>{card.title}</h3><p className="card-customer">{card.customer} · {card.owner}</p><span className="product-pill">{card.product}</span>
+                {stageCards.map((card) => <article draggable={card.lifecycle === "active"} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.id); setDraggingId(card.id); setBoardNotice(null); }} onDragEnd={() => { setDraggingId(null); setDropStage(null); }} className={`${card.lifecycle === "paused" ? "pipeline-card is-paused" : "pipeline-card"}${draggingId === card.id ? " is-dragging" : ""}`} key={card.id}>
+                  <div className="card-topline"><span className="drag-handle" title="拖拽改变阶段" aria-hidden="true">⠿</span><span className={card.kind === "lead" ? "object-pill lead" : "object-pill"}>{card.kind === "lead" ? "潜客" : card.customerKind}</span>{card.lifecycle === "paused" && <span className="paused-pill">暂停培育</span>}<div className="card-menu-wrap"><button className="more-button" aria-label={`管理${card.title}生命周期`} onClick={() => setMenuId(menuId === card.id ? null : card.id)}>•••</button>{menuId === card.id && <div className="card-menu">{card.lifecycle === "paused" ? <button onClick={() => reactivate(card.id)}>重新激活并生成任务</button> : <button onClick={() => setLifecycleDraft({ id: card.id, action: "pause", reason: "客户时间窗口未确定", reviewDate: "2026-08-24" })}>暂停并设置复评日期</button>}<button className="danger" onClick={() => setLifecycleDraft({ id: card.id, action: "close", reason: "客户明确暂不推进", reviewDate: "" })}>关闭并保留原因</button></div>}</div></div>
+                  <h3>{card.title}</h3><p className="card-customer">{card.customer}{card.contact ? ` · ${card.contact}` : ""} · {card.owner}</p><span className="product-pill">{card.product}</span>
                   <blockquote>{card.evidence}</blockquote>
                   <div className="card-stage-meta"><span>{card.stageAge}</span>{card.amount && <strong>{card.amount}</strong>}</div>
                   {card.lifecycle === "paused" && <div className="pause-reason"><span>{card.pauseReason}</span><b>{card.reviewDate} 复评</b></div>}
                   <div className="card-task"><span>下一任务 · {card.due}</span><strong>{card.nextTask}</strong><small>{card.taskSource}</small></div>
+                  {card.lifecycle === "active" && <label className="stage-move-control"><span>移动阶段</span><select aria-label={`移动${card.title}到其他阶段`} value="" onChange={(event) => { if (event.target.value) requestStageMove(card.id, event.target.value as FunnelStage); }}><option value="">选择阶段…</option>{funnelStages.filter((item) => item.id !== "lead" && item.id !== card.stage).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
                   <button className="card-action" onClick={onCompose}>{card.kind === "lead" ? "记录处理" : "记录跟进"}<span>→</span></button>
                 </article>)}
                 {!stageCards.length && <div className="lane-empty">当前筛选下没有客户</div>}
@@ -360,6 +431,20 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     </>}
 
     {lifecycleDraft && <div className="modal-backdrop" role="presentation"><form className="lifecycle-dialog" role="dialog" aria-modal="true" aria-label={lifecycleDraft.action === "pause" ? "暂停客户推进" : "关闭客户推进"} onSubmit={submitLifecycle}><header><div><span className="eyebrow">生命周期处置</span><h3>{lifecycleDraft.action === "pause" ? "暂停，但不要丢失客户" : "关闭并保留历史原因"}</h3><p>{lifecycleDraft.action === "pause" ? "对象移出开放池，同时保留当前事实阶段和重新评估时间。" : "对象不再出现在开放看板中，历史活动和阶段变化继续保留。"}</p></div><button type="button" onClick={() => setLifecycleDraft(null)}>×</button></header><label>处置原因<select value={lifecycleDraft.reason} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reason: event.target.value })}><option>客户时间窗口未确定</option><option>预算尚未落实</option><option>已有其他方案</option><option>客户明确暂不推进</option><option>重复或无效对象</option></select></label>{lifecycleDraft.action === "pause" && <label>重新评估日期<input type="date" required value={lifecycleDraft.reviewDate} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reviewDate: event.target.value })} /></label>}<footer><button type="button" className="secondary-button" onClick={() => setLifecycleDraft(null)}>取消</button><button className="primary-button" type="submit">确认处置</button></footer></form></div>}
+    {moveDraft && moveSource && <div className="modal-backdrop" role="presentation"><form className="stage-move-dialog" role="dialog" aria-modal="true" aria-label={moveSource.kind === "lead" ? "潜客转客户并创建商机" : "确认商机阶段变化"} onSubmit={submitStageMove}>
+      <header><div><span className="eyebrow">{moveSource.kind === "lead" ? "潜客转化确认" : "事实阶段校准"}</span><h3>{moveSource.kind === "lead" ? "转客户，并生成一条正式商机" : `移动到“${funnelStages.find((stage) => stage.id === moveDraft.targetStage)?.label}”阶段`}</h3><p>{moveSource.kind === "lead" ? "拖拽只发起转化；确认客户、联系人、事实和下一任务后才真正创建。" : "拖拽不能替代客户事实，请确认本次阶段变化的依据和下一任务。"}</p></div><button type="button" onClick={() => setMoveDraft(null)}>×</button></header>
+      <div className="stage-route"><span>{moveSource.kind === "lead" ? "潜客" : funnelStages.find((stage) => stage.id === moveSource.stage)?.label}</span><b>→</b><strong>{funnelStages.find((stage) => stage.id === moveDraft.targetStage)?.label}</strong></div>
+      <div className="target-stage-criteria"><span>目标阶段准入事实</span><strong>{stageMoveCriteria[moveDraft.targetStage]}</strong></div>
+      {moveSource.kind === "lead" && <div className="conversion-summary"><div><span>将建立客户</span><strong>{moveSource.customer}</strong><small>{moveSource.customerKind} · 负责人 {moveSource.owner}</small></div><div><span>来源事实保留</span><strong>{moveSource.taskSource}</strong><small>原始产品方向：{moveSource.product}</small></div></div>}
+      <div className="stage-move-fields">
+        {moveSource.kind === "lead" && <><label>确认后的联系人<input required value={moveDraft.contactName} onChange={(event) => setMoveDraft({ ...moveDraft, contactName: event.target.value })} placeholder="姓名或明确称呼" /></label><label>商机名称<input required value={moveDraft.opportunityName} onChange={(event) => setMoveDraft({ ...moveDraft, opportunityName: event.target.value })} /></label></>}
+        <label className="wide">本次阶段变化依据<textarea required value={moveDraft.evidence} onChange={(event) => setMoveDraft({ ...moveDraft, evidence: event.target.value })} placeholder="填写能够满足上方准入条件的客户事实" /></label>
+        <label className="wide">下一任务<input required value={moveDraft.nextTask} onChange={(event) => setMoveDraft({ ...moveDraft, nextTask: event.target.value })} placeholder="下一步要取得什么客户事实" /></label>
+      </div>
+      {moveSource.kind === "lead" && <div className="conversion-effects"><strong>确认后一次完成</strong><span>✓ 建立或关联客户主档</span><span>✓ 保留潜客来源与跟进历史</span><span>✓ 创建商机并进入目标阶段</span><span>✓ 创建一条开放的下一任务</span></div>}
+      <div className="move-guardrail">不会根据拖拽自动补造联系人、预算、客户承诺或成交概率。</div>
+      <footer><button type="button" className="secondary-button" onClick={() => setMoveDraft(null)}>取消</button><button className="primary-button" type="submit">{moveSource.kind === "lead" ? "确认转客户并创建商机" : "确认阶段变化"}</button></footer>
+    </form></div>}
   </div>;
 }
 
