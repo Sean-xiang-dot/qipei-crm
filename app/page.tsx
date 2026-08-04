@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type FormEvent, useEffect, useMemo, useState } from "react";
 
 type View = "workbench" | "tasks" | "customers" | "opportunities" | "activities" | "insights";
 
@@ -20,17 +20,68 @@ const initialTasks = [
   { id: 4, time: "明天", urgency: "later", customer: "星河美术工作室", title: "确认暑期体验课时间", fact: "体验日期与参与老师", reason: "客户已同意体验，但尚未排期", source: "商机下一步", owner: "我", action: "开始跟进" },
 ];
 
-const customers = [
-  { name: "启航教育集团", form: "教育机构", city: "上海", owner: "顾然", products: "一体机 · ClassIn", next: "今天 10:30", health: "待反馈", tone: "amber" },
-  { name: "晨星素质教育", form: "新线索", city: "上海", owner: "顾然", products: "一体机", next: "今天 14:00", health: "待首响", tone: "red" },
-  { name: "知行语言中心", form: "教育机构", city: "苏州", owner: "顾然", products: "一体机", next: "今天 16:00", health: "机会判断", tone: "violet" },
-  { name: "星河美术工作室", form: "教育工作室", city: "杭州", owner: "顾然", products: "ClassIn", next: "明天", health: "体验排期", tone: "blue" },
+type CustomerLifecycle = "new" | "active" | "attention" | "paused" | "closed";
+
+type CustomerItem = {
+  id: string;
+  name: string;
+  form: string;
+  city: string;
+  owner: string;
+  products: string;
+  next: string;
+  health: string;
+  tone: string;
+  lifecycle: CustomerLifecycle;
+  lastFact: string;
+  lastActiveDays: number;
+  pauseReason?: string;
+  reviewDate?: string;
+};
+
+type ForecastItem = {
+  id: string;
+  name: string;
+  customer: string;
+  stage: string;
+  amount: number;
+  forecastAmount: number;
+  evidence: string;
+  next: string;
+  risk: string;
+  closeDate: string;
+};
+
+type CrmRecord = Record<string, unknown>;
+
+type InsightPayload = {
+  customers?: { records?: CrmRecord[] };
+  opportunities?: { records?: CrmRecord[] };
+  activities?: { records?: CrmRecord[] };
+  summary?: {
+    metrics?: {
+      accountsActiveInPeriod?: { count?: number };
+      accounts?: { count?: number };
+      activityRecords?: { count?: number };
+      visitRecords?: { count?: number };
+      performance?: { total?: number };
+    };
+  };
+};
+
+const initialCustomers: CustomerItem[] = [
+  { id: "customer-1", name: "启航教育集团", form: "教育机构", city: "上海", owner: "顾然", products: "一体机 · ClassIn", next: "今天 10:30", health: "待反馈", tone: "amber", lifecycle: "attention", lastFact: "演示完成，等待校长确认课堂适配结果", lastActiveDays: 2 },
+  { id: "customer-2", name: "知行语言中心", form: "教育机构", city: "苏州", owner: "顾然", products: "一体机", next: "今天 16:00", health: "活跃经营", tone: "violet", lifecycle: "active", lastFact: "新增教室并提出异地教师联合授课场景", lastActiveDays: 1 },
+  { id: "customer-3", name: "星河美术工作室", form: "教育工作室", city: "杭州", owner: "顾然", products: "ClassIn", next: "明天", health: "暂停培育", tone: "amber", lifecycle: "paused", lastFact: "秋季课程尚未定班，采购窗口需要重新确认", lastActiveDays: 24, pauseReason: "课程排期未确定", reviewDate: "2026-08-24" },
+  { id: "customer-4", name: "云帆在线教育", form: "教育机构", city: "北京", owner: "陈放", products: "ClassIn · 一体机", next: "今天", health: "本周活跃", tone: "blue", lifecycle: "active", lastFact: "确认下周接收样机，运营和主讲老师共同试用", lastActiveDays: 0 },
+  { id: "customer-5", name: "林老师", form: "个人老师", city: "南京", owner: "林溪", products: "一体机", next: "需补充", health: "需要关注", tone: "red", lifecycle: "attention", lastFact: "比较个人工作室设备分期方案，尚无下一动作", lastActiveDays: 8 },
 ];
 
-const opportunities = [
-  { name: "6 间教室升级", customer: "启航教育集团", stage: "体验验证", amount: "¥168,000", evidence: "演示已完成，待校长反馈", next: "今天", risk: "待客户反馈" },
-  { name: "ClassIn 账号扩容", customer: "启航教育集团", stage: "商务推进", amount: "¥32,000", evidence: "确认新增 80 个账号", next: "8月8日", risk: "证据完整" },
-  { name: "暑期线上课方案", customer: "星河美术工作室", stage: "兴趣确认", amount: "¥12,000", evidence: "同意开通体验账号", next: "明天", risk: "待安排体验" },
+const initialForecastOpportunities: ForecastItem[] = [
+  { id: "forecast-1", name: "6 间教室升级", customer: "启航教育集团", stage: "验证", amount: 168000, forecastAmount: 120000, evidence: "演示已完成，待校长反馈", next: "今天", risk: "待客户反馈", closeDate: "2026-08-28" },
+  { id: "forecast-2", name: "ClassIn 账号扩容", customer: "启航教育集团", stage: "商务推进", amount: 32000, forecastAmount: 32000, evidence: "确认新增 80 个账号", next: "8月8日", risk: "证据完整", closeDate: "2026-08-18" },
+  { id: "forecast-3", name: "暑期线上课方案", customer: "星河美术工作室", stage: "兴趣", amount: 12000, forecastAmount: 6000, evidence: "同意开通体验账号", next: "明天", risk: "待安排体验", closeDate: "2026-08-25" },
+  { id: "forecast-4", name: "秋季集团账号续费", customer: "云帆在线教育", stage: "商务推进", amount: 260000, forecastAmount: 180000, evidence: "已确认续费范围，等待集团预算审批", next: "8月20日", risk: "待预算审批", closeDate: "2026-09-25" },
 ];
 
 type OpportunityMode = "pipeline" | "forecast" | "lifecycle";
@@ -82,6 +133,30 @@ const stageMoveCriteria: Record<Exclude<FunnelStage, "lead">, string> = {
   validation: "已取得客户实际使用反馈或适配结论",
   commercial: "已发生报价、合同、付款或明确采购安排",
 };
+
+function moneyLabel(value: number): string {
+  return `¥${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(value || 0)}`;
+}
+
+function crmDate(value: unknown): Date | null {
+  if (typeof value === "number" || /^\d{10,13}$/.test(String(value || ""))) {
+    const numeric = Number(value);
+    const date = new Date(String(Math.trunc(numeric)).length === 10 ? numeric * 1000 : numeric);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const date = new Date(String(value || ""));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function daysFromNow(value: unknown): number {
+  const date = crmDate(value);
+  return date ? Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000)) : 999;
+}
+
+function shortDate(value: unknown): string {
+  const date = crmDate(value);
+  return date ? new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date) : "待确认";
+}
 
 const initialPipelineCards: PipelineCard[] = [
   { id: "lead-1", kind: "lead", stage: "lead", lifecycle: "active", title: "晨星素质教育", customer: "晨星素质教育", customerKind: "教育机构", owner: "顾然", product: "教学一体机", evidence: "计划升级 3 间教室，咨询演示和安装条件", stageAge: "新线索 · 2 小时", nextTask: "完成首次联系并确认联系人", due: "今天 14:00", taskSource: "线索自动化" },
@@ -235,7 +310,7 @@ function Workbench({ userName, tasks, onCompose, onFinish, onJump }: { userName:
 
     <div className="content-grid lower-grid">
       <section className="panel"><PanelHeading eyebrow="预测校准" title="需要关注的商机" subtitle="不是催阶段，而是补齐关键事实" action="进入商机" onAction={() => onJump("opportunities")} /><div className="opportunity-mini-list">
-        {opportunities.map((item, index) => <div className="opportunity-mini" key={item.name}><span className={`stage-dot s${index}`} /><div><strong>{item.customer}</strong><p>{item.name} · {item.evidence}</p></div><b>{item.amount}</b><span className="risk-pill">{item.risk}</span></div>)}
+        {initialForecastOpportunities.slice(0, 3).map((item, index) => <div className="opportunity-mini" key={item.id}><span className={`stage-dot s${index}`} /><div><strong>{item.customer}</strong><p>{item.name} · {item.evidence}</p></div><b>{moneyLabel(item.amount)}</b><span className="risk-pill">{item.risk}</span></div>)}
       </div></section>
       <section className="panel signal-panel"><PanelHeading eyebrow="限量提醒 · 1/5" title="产品机会判断" subtitle="只有达到事实门槛的方向才会出现" />
         <div className="signal-route"><span className="company-mark">知</span><div><strong>知行语言中心</strong><p>现有一体机 <b>→</b> ClassIn</p></div><span className="context-pill">情境事实</span></div>
@@ -269,9 +344,78 @@ function TaskCenter({ tasks, tab, setTab, onFinish, onCompose }: { tasks: typeof
 }
 
 function CustomerList({ onCompose }: { onCompose: () => void }) {
-  return <div className="page-content"><section className="page-intro"><div><span className="eyebrow">统一客户主档</span><h2>先看客户正在发生什么，再看静态资料</h2><p>画像、联系人、产品、商机和下一动作使用同一组事实。</p></div><button className="primary-button" onClick={onCompose}>＋ 记录客户进展</button></section>
-    <section className="metric-grid compact"><Metric label="我负责的客户" value="36" detail="本周新增 4 个" accent="indigo" /><Metric label="7天有新事实" value="21" detail="活跃客户占 58%" accent="green" /><Metric label="缺少下一动作" value="5" detail="建议今日补齐" accent="amber" /><Metric label="待判断产品机会" value="3" detail="今日限量投放 1 条" accent="blue" /></section>
-    <section className="panel table-panel"><div className="filter-row"><div className="tabs"><button className="active">全部客户</button><button>本周活跃</button><button>需要关注</button></div><div className="filter-actions"><button>负责人：我⌄</button><button>客户类型⌄</button></div></div><div className="customer-table"><div className="customer-table-head"><span>客户</span><span>当前产品</span><span>下一动作</span><span>经营状态</span><span>负责人</span><span /></div>{customers.map((item) => <div className="customer-row" key={item.name}><div className="customer-name"><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.form} · {item.city}</small></div></div><span>{item.products}</span><span>{item.next}</span><span className={`status ${item.tone}`}>{item.health}</span><span>{item.owner}</span><button onClick={onCompose}>记录进展</button></div>)}</div></section>
+  const [items, setItems] = useState<CustomerItem[]>(initialCustomers);
+  const [tab, setTab] = useState<"全部客户" | "本周活跃" | "需要关注">("全部客户");
+  const [mode, setMode] = useState<"list" | "lifecycle">("list");
+  const [dataState, setDataState] = useState<"loading" | "real" | "fallback">("loading");
+  const [lifecycleDraft, setLifecycleDraft] = useState<{ id: string; action: "attention" | "pause" | "close" | "reactivate"; reason: string; reviewDate: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/crm/data?view=customers", { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "客户查询失败");
+        const records = Array.isArray(data.customers?.records) ? data.customers.records : [];
+        if (!records.length) throw new Error("CRM 当前没有返回客户记录");
+        const userName = data.userName || "当前用户";
+        const mapped: CustomerItem[] = records.map((record: Record<string, unknown>) => {
+          const recent = record.recentActivityRecordTime || record.RecentVisitDate__c || record.updatedAt;
+          const activeDays = daysFromNow(recent);
+          const createdDays = daysFromNow(record.createdAt);
+          const lifecycle: CustomerLifecycle = createdDays <= 30 ? "new" : activeDays <= 7 ? "active" : "attention";
+          return {
+            id: String(record.id),
+            name: String(record.accountName || "未命名客户"),
+            form: String(record.AccountTypeJJ__c || record.entityType || "类型待确认"),
+            city: String(record.cityA__c || record.provinceA__c || "地区待确认"),
+            owner: userName,
+            products: "从客户360加载",
+            next: activeDays <= 7 ? "查看最近进展" : "补充下一动作",
+            health: lifecycle === "new" ? "新建客户" : lifecycle === "active" ? "本周活跃" : "需要关注",
+            tone: lifecycle === "new" ? "violet" : lifecycle === "active" ? "blue" : "red",
+            lifecycle,
+            lastFact: recent ? `最近 CRM 事实：${shortDate(recent)}` : "尚未取得有效客户事实",
+            lastActiveDays: activeDays,
+          };
+        });
+        if (active) {
+          setItems(mapped);
+          setDataState("real");
+        }
+      })
+      .catch(() => { if (active) setDataState("fallback"); });
+    return () => { active = false; };
+  }, []);
+
+  const visibleItems = items.filter((item) => tab === "全部客户" || (tab === "本周活跃" ? item.lastActiveDays <= 7 && item.lifecycle !== "paused" : ["attention", "paused"].includes(item.lifecycle) || item.next === "需补充" || item.next === "补充下一动作"));
+  const activeCount = items.filter((item) => item.lastActiveDays <= 7 && item.lifecycle !== "paused" && item.lifecycle !== "closed").length;
+  const attentionCount = items.filter((item) => ["attention", "paused"].includes(item.lifecycle)).length;
+  const lifecycleLabel: Record<CustomerLifecycle, string> = { new: "新建观察", active: "活跃经营", attention: "风险关注", paused: "暂停培育", closed: "已关闭" };
+
+  function applyCustomerLifecycle(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!lifecycleDraft) return;
+    setItems((current) => current.map((item) => item.id !== lifecycleDraft.id ? item : {
+      ...item,
+      lifecycle: lifecycleDraft.action === "reactivate" ? "active" : lifecycleDraft.action === "attention" ? "attention" : lifecycleDraft.action === "pause" ? "paused" : "closed",
+      health: lifecycleDraft.action === "reactivate" ? "本周活跃" : lifecycleDraft.action === "attention" ? "需要关注" : lifecycleDraft.action === "pause" ? "暂停培育" : "已关闭",
+      tone: lifecycleDraft.action === "reactivate" ? "blue" : lifecycleDraft.action === "attention" ? "red" : "amber",
+      pauseReason: lifecycleDraft.action === "reactivate" ? undefined : lifecycleDraft.reason,
+      reviewDate: lifecycleDraft.action === "pause" ? lifecycleDraft.reviewDate : undefined,
+      next: lifecycleDraft.action === "reactivate" ? "今天 · 确认恢复后的下一动作" : item.next,
+      lastActiveDays: lifecycleDraft.action === "reactivate" ? 0 : item.lastActiveDays,
+    }));
+    setLifecycleDraft(null);
+  }
+
+  return <div className="page-content customer-page"><section className="page-intro"><div><span className="eyebrow">统一客户主档</span><h2>客户经营与客户生命周期分开治理</h2><p>商机阶段回答“这笔采购走到哪”；客户生命周期回答“这段客户关系是否值得继续经营”。</p></div><button className="primary-button" onClick={onCompose}>＋ 记录客户进展</button></section>
+    <section className="customer-command panel"><div className="customer-modes" aria-label="客户工作方式"><button className={mode === "list" ? "active" : ""} onClick={() => setMode("list")}>▦ 客户列表</button><button className={mode === "lifecycle" ? "active" : ""} onClick={() => setMode("lifecycle")}>◌ 生命周期治理</button></div><span className={`data-source-badge ${dataState}`}>{dataState === "real" ? "企培 MCP 实时数据" : dataState === "loading" ? "正在读取企培 CRM" : "演示数据 · MCP 查询未完成"}</span></section>
+    <section className="metric-grid compact"><Metric label="我负责的客户" value={String(items.filter((item) => item.lifecycle !== "closed").length)} detail={`${items.filter((item) => item.lifecycle === "new").length} 个新建观察`} accent="indigo" /><Metric label="7天有新事实" value={String(activeCount)} detail={`活跃客户占 ${items.length ? Math.round(activeCount / items.length * 100) : 0}%`} accent="green" /><Metric label="需要关注" value={String(attentionCount)} detail="风险与暂停客户" accent="amber" /><Metric label="暂停培育" value={String(items.filter((item) => item.lifecycle === "paused").length)} detail="均需设置复评日期" accent="blue" /></section>
+    {mode === "list" && <section className="panel table-panel"><div className="filter-row"><div className="tabs">{(["全部客户", "本周活跃", "需要关注"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><div className="filter-summary">当前 {visibleItems.length} 个 · 负责人：我</div></div><div className="customer-table"><div className="customer-table-head"><span>客户</span><span>当前产品</span><span>下一动作</span><span>经营状态</span><span>客户生命周期</span><span /></div>{visibleItems.map((item) => <div className="customer-row" key={item.id}><div className="customer-name"><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.form} · {item.city}</small></div></div><span>{item.products}</span><span>{item.next}</span><span className={`status ${item.tone}`}>{item.health}</span><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span><button onClick={onCompose}>记录进展</button></div>)}</div></section>}
+    {mode === "lifecycle" && <><section className="customer-lifecycle-overview"><article className="panel"><span className="eyebrow">独立于商机阶段</span><h3>客户关系状态</h3><p>同一个客户可以有多个商机；暂停一条商机不等于暂停整个客户，关闭客户也必须保留历史交易与活动。</p></article><article className="panel"><span className="eyebrow">建议规则 · 待业务校准</span><h3>治理触发条件</h3><div className="admission-list"><span>30 天无有效事实 → 风险关注</span><span>暂停必须设置复评日期</span><span>重新激活必须生成下一任务</span><span>关闭必须记录明确原因</span></div></article></section>
+      <section className="panel customer-lifecycle-panel"><div className="customer-lifecycle-head"><div><span className="eyebrow">客户生命周期治理</span><h3>关系健康度与处置队列</h3><p>这里治理客户关系，不直接修改任何一条商机的事实阶段。</p></div></div><div className="customer-lifecycle-table"><div className="customer-lifecycle-row head"><span>客户</span><span>生命周期</span><span>最近事实</span><span>下一动作/复评</span><span>处置</span></div>{items.filter((item) => item.lifecycle !== "closed").map((item) => <div className="customer-lifecycle-row" key={item.id}><div><strong>{item.name}</strong><small>{item.form} · {item.owner}</small></div><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span><p>{item.lastFact}<small>{item.lastActiveDays >= 999 ? "时间未知" : `${item.lastActiveDays} 天前`}</small></p><div><strong>{item.next}</strong><small>{item.lifecycle === "paused" ? `${item.reviewDate || "待设置"} 复评` : item.pauseReason || "持续经营"}</small></div><div className="row-actions">{item.lifecycle === "paused" ? <button onClick={() => setLifecycleDraft({ id: item.id, action: "reactivate", reason: "重新取得客户经营窗口", reviewDate: "" })}>重新激活</button> : <><button onClick={() => setLifecycleDraft({ id: item.id, action: "attention", reason: "连续缺少有效客户事实", reviewDate: "" })}>关注</button><button onClick={() => setLifecycleDraft({ id: item.id, action: "pause", reason: "客户经营窗口暂不明确", reviewDate: "2026-08-24" })}>暂停</button><button onClick={() => setLifecycleDraft({ id: item.id, action: "close", reason: "客户明确不再合作", reviewDate: "" })}>关闭</button></>}</div></div>)}</div></section></>}
+    {lifecycleDraft && <div className="modal-backdrop" role="presentation"><form className="lifecycle-dialog" role="dialog" aria-modal="true" aria-label="客户生命周期处置" onSubmit={applyCustomerLifecycle}><header><div><span className="eyebrow">客户生命周期处置</span><h3>{lifecycleDraft.action === "reactivate" ? "重新激活客户关系" : lifecycleDraft.action === "pause" ? "暂停客户培育" : lifecycleDraft.action === "attention" ? "标记为需要关注" : "关闭客户关系"}</h3><p>该操作只改变客户关系状态，不会把客户名下商机自动推进、暂停或关闭。</p></div><button type="button" onClick={() => setLifecycleDraft(null)}>×</button></header><label>处置依据<input required value={lifecycleDraft.reason} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reason: event.target.value })} /></label>{lifecycleDraft.action === "pause" && <label>重新评估日期<input type="date" required value={lifecycleDraft.reviewDate} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reviewDate: event.target.value })} /></label>}<footer><button type="button" className="secondary-button" onClick={() => setLifecycleDraft(null)}>取消</button><button className="primary-button" type="submit">确认客户生命周期变化</button></footer></form></div>}
   </div>;
 }
 
@@ -286,11 +430,50 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
   const [dropStage, setDropStage] = useState<FunnelStage | null>(null);
   const [moveDraft, setMoveDraft] = useState<StageMoveDraft | null>(null);
   const [boardNotice, setBoardNotice] = useState<string | null>(null);
+  const [forecastPeriod, setForecastPeriod] = useState<"30d" | "quarter">("30d");
+  const [forecastItems, setForecastItems] = useState<ForecastItem[]>(initialForecastOpportunities.slice(0, 3));
+  const [forecastDataState, setForecastDataState] = useState<"loading" | "real" | "fallback">("loading");
 
   const visibleCards = cards.filter((card) => (customerKind === "全部" || card.customerKind === customerKind) && (includePaused || card.lifecycle === "active"));
   const activeOpportunities = cards.filter((card) => card.kind === "opportunity" && card.lifecycle === "active");
   const pausedCount = cards.filter((card) => card.lifecycle === "paused").length;
   const moveSource = moveDraft ? cards.find((card) => card.id === moveDraft.id) : undefined;
+  const forecastTarget = forecastPeriod === "30d" ? 300000 : 900000;
+  const bestForecast = forecastItems.reduce((sum, item) => sum + item.amount, 0);
+  const baseForecast = forecastItems.reduce((sum, item) => sum + item.forecastAmount, 0);
+
+  useEffect(() => {
+    if (mode !== "forecast") return;
+    let active = true;
+    fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "商机预测查询失败");
+        const accountNames = new Map((data.customers?.records || []).map((record: Record<string, unknown>) => [String(record.id), String(record.accountName || "未命名客户")]));
+        const mapped: ForecastItem[] = (data.opportunities?.records || []).map((record: Record<string, unknown>) => ({
+          id: String(record.id),
+          name: String(record.opportunityName || "未命名商机"),
+          customer: accountNames.get(String(record.accountId)) || `客户 ${String(record.accountId || "待关联")}`,
+          stage: record.saleStageId ? `CRM 阶段 ${String(record.saleStageId)}` : "阶段待确认",
+          amount: Number(record.money || 0),
+          forecastAmount: Number(record.fcastMoney || record.money || 0),
+          evidence: `CRM 预计关闭：${shortDate(record.closeDate)}`,
+          next: `预计 ${shortDate(record.closeDate)}`,
+          risk: Number(record.fcastMoney || 0) > 0 ? "已有预测金额" : "待补预测依据",
+          closeDate: String(record.closeDate || ""),
+        }));
+        if (active) {
+          setForecastItems(mapped);
+          setForecastDataState("real");
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setForecastItems(forecastPeriod === "30d" ? initialForecastOpportunities.slice(0, 3) : initialForecastOpportunities);
+        setForecastDataState("fallback");
+      });
+    return () => { active = false; };
+  }, [forecastPeriod, mode]);
 
   function formatLaneAmount(items: PipelineCard[]) {
     const amount = items.reduce((sum, item) => sum + Number((item.amount || "0").replace(/[^0-9]/g, "")), 0);
@@ -369,7 +552,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     <section className="opportunity-command panel">
       <div className="opportunity-modes" aria-label="商机工作方式">
         <button className={mode === "pipeline" ? "active" : ""} onClick={() => setMode("pipeline")}><span>▦</span> 全景阶段看板</button>
-        <button className={mode === "forecast" ? "active" : ""} onClick={() => setMode("forecast")}><span>◫</span> 业绩与预测</button>
+        <button className={mode === "forecast" ? "active" : ""} onClick={() => { if (mode !== "forecast") setForecastDataState("loading"); setMode("forecast"); }}><span>◫</span> 业绩与预测</button>
         <button className={mode === "lifecycle" ? "active" : ""} onClick={() => setMode("lifecycle")}><span>◌</span> 生命周期治理</button>
       </div>
       <div className="opportunity-facts"><span><b>{cards.filter((card) => card.kind === "lead" && card.lifecycle === "active").length}</b> 个开放潜客</span><i /><span><b>{activeOpportunities.length}</b> 个开放商机</span><i /><span><b>{pausedCount}</b> 个暂停培育</span></div>
@@ -415,9 +598,9 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     </>}
 
     {mode === "forecast" && <>
-      <section className="forecast-strip"><div><span>未来30天目标</span><strong>¥300,000</strong></div><i /><div><span>保底预测</span><strong>¥198,000</strong><small>66% 覆盖</small></div><div><span>最佳情况</span><strong>¥366,000</strong><small>122% 覆盖</small></div><div className="forecast-gap"><span>目标差额</span><strong>¥102,000</strong><small>优先补验证结论</small></div></section>
-      <section className="forecast-explanation"><strong>预测只读取开放商机</strong><span>潜客、暂停客户和没有事实依据的金额不进入预测；阶段看板负责经营过程，预测页负责业绩判断。</span></section>
-      <section className="panel table-panel"><div className="filter-row"><div className="tabs"><button className="active">未来30天</button><button>本季度</button></div><div className="filter-actions"><button>负责人：全部⌄</button><button>机构与个体⌄</button></div></div><div className="opp-table"><div className="opp-table-head"><span>商机</span><span>事实阶段</span><span>客观证据</span><span>金额</span><span>下一动作</span><span>风险</span><span /></div>{opportunities.map((item) => <div className="opp-row" key={item.name}><div><strong>{item.name}</strong><small>{item.customer}</small></div><span className="stage-pill">{item.stage}</span><span>{item.evidence}</span><strong>{item.amount}</strong><span>{item.next}</span><span className="risk-pill">{item.risk}</span><button onClick={onCompose}>校准</button></div>)}</div></section>
+      <section className="forecast-strip"><div><span>{forecastPeriod === "30d" ? "未来30天目标" : "本季度目标"}</span><strong>{moneyLabel(forecastTarget)}</strong></div><i /><div><span>保底预测</span><strong>{moneyLabel(baseForecast)}</strong><small>{forecastTarget ? Math.round(baseForecast / forecastTarget * 100) : 0}% 覆盖</small></div><div><span>最佳情况</span><strong>{moneyLabel(bestForecast)}</strong><small>{forecastTarget ? Math.round(bestForecast / forecastTarget * 100) : 0}% 覆盖</small></div><div className="forecast-gap"><span>目标差额</span><strong>{moneyLabel(Math.max(0, forecastTarget - baseForecast))}</strong><small>优先补阶段事实</small></div></section>
+      <section className="forecast-explanation"><strong>预测只读取开放商机</strong><span>潜客、暂停客户和没有事实依据的金额不进入预测；右侧显示当前数据来源。</span><span className={`data-source-badge ${forecastDataState}`}>{forecastDataState === "real" ? "企培 MCP 实时数据" : forecastDataState === "loading" ? "正在刷新" : "演示数据 · MCP 查询未完成"}</span></section>
+      <section className="panel table-panel"><div className="filter-row"><div className="tabs"><button className={forecastPeriod === "30d" ? "active" : ""} onClick={() => { if (forecastPeriod !== "30d") { setForecastDataState("loading"); setForecastPeriod("30d"); } }}>未来30天</button><button className={forecastPeriod === "quarter" ? "active" : ""} onClick={() => { if (forecastPeriod !== "quarter") { setForecastDataState("loading"); setForecastPeriod("quarter"); } }}>本季度</button></div><div className="filter-summary">{forecastItems.length} 个开放商机 · 负责人：我</div></div><div className="opp-table"><div className="opp-table-head"><span>商机</span><span>事实阶段</span><span>客观证据</span><span>金额</span><span>预计关闭</span><span>风险</span><span /></div>{forecastItems.map((item) => <div className="opp-row" key={item.id}><div><strong>{item.name}</strong><small>{item.customer}</small></div><span className="stage-pill">{item.stage}</span><span>{item.evidence}</span><strong>{moneyLabel(item.amount)}</strong><span>{shortDate(item.closeDate)}</span><span className="risk-pill">{item.risk}</span><button onClick={onCompose}>校准</button></div>)}{!forecastItems.length && <div className="empty-state">当前期间没有符合条件的开放商机。</div>}</div></section>
     </>}
 
     {mode === "lifecycle" && <>
@@ -453,7 +636,50 @@ function ActivityView() {
 }
 
 function InsightView() {
-  return <div className="page-content"><section className="page-intro"><div><span className="eyebrow">经营洞察</span><h2>看结果，也看结果背后的事实质量</h2><p>不把提醒数量和活动数量当作业绩，关注有效发现与真实推进。</p></div><button className="primary-button">导出本月复盘</button></section><section className="metric-grid"><Metric label="预测命中率" value="82%" detail="较上月 +6%" accent="green" /><Metric label="任务按时完成" value="74%" detail="首响任务 91%" accent="blue" /><Metric label="机会有效发现率" value="31%" detail="3 条进入事实探索" accent="violet" /><Metric label="活动后有效跟进" value="68%" detail="仍有 5 位待处理" accent="amber" /></section><section className="insight-grid"><article className="panel chart-card"><PanelHeading eyebrow="过去6周" title="预测质量趋势" subtitle="承诺预测与实际首款的差距持续缩小" /><div className="fake-chart"><div className="chart-axis"><span>100%</span><span>75%</span><span>50%</span><span>25%</span></div><div className="chart-bars">{[48,58,55,70,76,82].map((v,i)=><div key={i}><i style={{height:`${v}%`}} /><span>W{i+1}</span></div>)}</div></div></article><article className="panel"><PanelHeading eyebrow="本月主要缺口" title="管理动作建议" subtitle="从事实缺口反推团队辅导" /><div className="recommend-list"><div><b>01</b><p><strong>体验完成后反馈不及时</strong><span>平均等待 2.4 天 · 建议设定 24 小时跟进规则</span></p></div><div><b>02</b><p><strong>商务推进缺少付款日期</strong><span>影响 ¥10.2 万预测可信度</span></p></div><div><b>03</b><p><strong>活动邀约客户匹配度偏低</strong><span>本月到场率 63% · 需要优化目标客群</span></p></div></div></article></section></div>;
+  const [period, setPeriod] = useState<"12m" | "quarter">("12m");
+  const [payload, setPayload] = useState<InsightPayload | null>(null);
+  const [dataState, setDataState] = useState<"loading" | "real" | "error">("loading");
+
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/crm/data?view=insights&period=${period}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "经营洞察查询失败");
+        if (active) {
+          setPayload(data);
+          setDataState("real");
+        }
+      })
+      .catch(() => { if (active) setDataState("error"); });
+    return () => { active = false; };
+  }, [period]);
+
+  const records = payload?.customers?.records || [];
+  const opportunityRecords = payload?.opportunities?.records || [];
+  const metrics = payload?.summary?.metrics;
+  const formBuckets = [
+    { label: "教育机构", match: (value: string) => /机构|学校|企业/.test(value) },
+    { label: "教育工作室", match: (value: string) => /工作室/.test(value) },
+    { label: "个人老师", match: (value: string) => /个人|老师/.test(value) },
+  ].map((bucket) => ({ ...bucket, count: records.filter((record) => bucket.match(String(record.AccountTypeJJ__c || record.entityType || ""))).length }));
+  const classifiedCount = formBuckets.reduce((sum, item) => sum + item.count, 0);
+  const activeAccounts = Number(metrics?.accountsActiveInPeriod?.count || 0);
+  const accountCount = Number(metrics?.accounts?.count || records.length || 0);
+  const activityCount = Number(metrics?.activityRecords?.count || payload?.activities?.records?.length || 0);
+  const visitCount = Number(metrics?.visitRecords?.count || 0);
+  const activeRate = accountCount ? Math.min(100, Math.round(activeAccounts / accountCount * 100)) : 0;
+  const performance = Number(metrics?.performance?.total || 0);
+  const formMax = Math.max(...formBuckets.map((item) => item.count), 1);
+
+  return <div className="page-content insight-page"><section className="page-intro"><div><span className="eyebrow">负责人原版四类洞察</span><h2>客户结构、产品组合、体验转化与活动质量</h2><p>已接入企培 MCP 的真实客户、商机、销售绩效和活动数据；缺少标准口径的指标明确标记，不用固定百分比冒充。</p></div><div className="insight-actions"><div className="tabs"><button className={period === "12m" ? "active" : ""} onClick={() => { if (period !== "12m") { setDataState("loading"); setPeriod("12m"); } }}>近12个月</button><button className={period === "quarter" ? "active" : ""} onClick={() => { if (period !== "quarter") { setDataState("loading"); setPeriod("quarter"); } }}>本季度</button></div><span className={`data-source-badge ${dataState}`}>{dataState === "real" ? "企培 MCP 实时数据" : dataState === "loading" ? "正在刷新指标" : "真实数据暂不可用"}</span></div></section>
+    <section className="original-insight-grid">
+      <article className="report-card panel"><div className="section-header"><div><h3>客户形态 × 产品组合</h3><p>客户形态读取 CRM；产品组合需要订单行聚合口径</p></div><span className="coverage-pill partial">部分接入</span></div><table className="matrix-table"><thead><tr><th></th><th>仅一体机</th><th>仅 ClassIn</th><th>组合客户</th></tr></thead><tbody>{formBuckets.map((item) => <tr key={item.label}><th>{item.label}<small>{dataState === "real" ? `${item.count} 个客户` : "等待 CRM 数据"}</small></th><td>待口径</td><td>待口径</td><td>待口径</td></tr>)}</tbody></table><div className="metric-boundary">当前 MCP 客户接口不返回订单行产品，不能从客户缓存字段推断真实购买组合。</div></article>
+      <article className="report-card panel"><div className="section-header"><div><h3>客户结构与收入贡献</h3><p>数量和收入分开审视，不把客户数量当作收入质量</p></div><span className={`coverage-pill ${dataState === "real" ? "real" : "error"}`}>{dataState === "real" ? "实时" : "待数据"}</span></div><div className="segment-list">{formBuckets.map((item) => <div className="segment-row" key={item.label}><span>{item.label}<br /><small>{dataState === "real" ? `${item.count} 个客户` : "等待数据"}</small></span><div className="bar-track"><i style={{ width: `${Math.max(item.count ? 8 : 0, item.count / formMax * 100)}%` }} /></div><strong>{records.length ? `${Math.round(item.count / Math.max(records.length, 1) * 100)}%` : "—"}</strong></div>)}{classifiedCount < records.length && <div className="segment-row"><span>类型待确认<br /><small>{records.length - classifiedCount} 个客户</small></span><div className="bar-track"><i style={{ width: `${(records.length - classifiedCount) / Math.max(records.length, 1) * 100}%` }} /></div><strong>待治理</strong></div>}</div><div className="report-total"><span>同期销售绩效</span><strong>{dataState === "real" ? moneyLabel(performance) : "—"}</strong><small>收入按客户形态拆分仍需专用聚合接口</small></div></article>
+      <article className="report-card panel"><div className="section-header"><div><h3>体验验证转化</h3><p>按客户事实统计，不按销售主观概率</p></div><span className="coverage-pill partial">待阶段字典</span></div><div className="stage-bars">{["已安排体验", "体验已完成", "取得反馈", "确认适配"].map((label) => <div className="stage-bar-row pending" key={label}><span>{label}</span><div className="bar-track"><i /></div><strong>—</strong></div>)}</div><div className="metric-boundary">已读取 {opportunityRecords.length} 条期间商机，但 MCP 尚未提供企培销售阶段 ID 与“安排/完成/反馈/适配”的标准映射，暂不生成转化率。</div></article>
+      <article className="report-card panel"><div className="section-header"><div><h3>活动质量</h3><p>活动量只是工作负荷，客户事实才是推进结果</p></div><span className={`coverage-pill ${dataState === "real" ? "real" : "error"}`}>{dataState === "real" ? "实时" : "待数据"}</span></div><div className="health-ring-wrap"><div className="health-ring" style={{ "--value": activeRate } as CSSProperties}><div><strong>{dataState === "real" ? `${activeRate}%` : "—"}</strong><span>期间活跃客户</span></div></div><div className="health-stats"><div className="health-stat"><span>销售活动记录</span><strong>{dataState === "real" ? activityCount : "—"}</strong></div><div className="health-stat"><span>有效拜访</span><strong>{dataState === "real" ? visitCount : "—"}</strong></div><div className="health-stat"><span>客户总数</span><strong>{dataState === "real" ? accountCount : "—"}</strong></div></div></div><div className="metric-boundary real">来源：CRM 活动记录与销售汇总；CRM 跟进活跃不等同于课耗活跃。</div></article>
+    </section>
+  </div>;
 }
 
 function Composer({ step, note, setNote, onClose, onAnalyze, onBack, onConfirm }: { step: "write" | "review" | "done"; note: string; setNote: (v: string) => void; onClose: () => void; onAnalyze: () => void; onBack: () => void; onConfirm: () => void }) {
