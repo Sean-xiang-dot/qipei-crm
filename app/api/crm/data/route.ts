@@ -87,6 +87,11 @@ export async function GET(request: NextRequest) {
           soql: `SELECT id,name,companyName,mobile,ownerId,createdAt,updatedAt FROM lead WHERE ownerId = ${ownerId} ORDER BY updatedAt DESC LIMIT 100`,
         }, token).catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" })),
       ]);
+      const opportunityRecords = Array.isArray(opportunities.records) ? opportunities.records as Array<Record<string, unknown>> : [];
+      const opportunityIds = opportunityRecords.map(record => String(record.id || "")).filter(Boolean);
+      const opportunityLifecycle = opportunityIds.length
+        ? await upstreamJson(`/api/opportunity-lifecycle?opportunityIds=${encodeURIComponent(opportunityIds.join(","))}`, token)
+        : { records: {} };
       return NextResponse.json({
         source: "enterprise-training-mcp",
         asOf: new Date().toISOString(),
@@ -95,6 +100,7 @@ export async function GET(request: NextRequest) {
         customers,
         stageDictionary,
         leads,
+        opportunityLifecycle,
       });
     }
 

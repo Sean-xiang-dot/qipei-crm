@@ -57,6 +57,15 @@ export async function POST(request: NextRequest) {
   if (action === "create-lead") {
     return forward("/api/leads", "POST", objectValue(body.payload), token);
   }
+  if (action === "convert-lead") {
+    const payload = objectValue(body.payload);
+    const leadId = String(payload.leadId || "");
+    if (!leadId) return NextResponse.json({ error: "缺少 leadId" }, { status: 400 });
+    return forward(`/api/leads/${encodeURIComponent(leadId)}/convert`, "POST", payload, token);
+  }
+  if (action === "opportunity-lifecycle") {
+    return forward("/api/opportunity-lifecycle/transition", "POST", objectValue(body.payload), token);
+  }
   if (action === "update-record") {
     const payload = objectValue(body.payload);
     const objectApiKey = String(payload.objectApiKey || "");
