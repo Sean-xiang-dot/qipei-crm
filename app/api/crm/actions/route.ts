@@ -42,6 +42,12 @@ export async function POST(request: NextRequest) {
   if (action === "create-task") {
     return forward("/api/tasks", "POST", objectValue(body.payload), token);
   }
+  if (action === "update-task") {
+    const payload = objectValue(body.payload);
+    const taskId = String(payload.taskId || "");
+    if (!taskId) return NextResponse.json({ error: "缺少 taskId" }, { status: 400 });
+    return forward(`/api/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, token);
+  }
   if (action === "create-opportunity") {
     return forward("/api/opportunities", "POST", objectValue(body.payload), token);
   }

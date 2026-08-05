@@ -24,13 +24,19 @@ type TaskItem = {
   source: string;
   owner: string;
   action: string;
+  kind?: "real" | "candidate";
+  completed?: boolean;
+  dueAt?: string | number;
+  associationId?: string;
+  associationType?: "account" | "opportunity";
+  statusLabel?: string;
 };
 
 const initialTasks: TaskItem[] = [
-  { id: "demo-1", time: "10:30", urgency: "overdue", customer: "启航教育集团", title: "取得一体机演示后的校长确认", fact: "实际课堂适配结论", reason: "演示已完成 2 天，仍缺客户反馈", source: "体验验证", owner: "我", action: "记录反馈" },
-  { id: "demo-2", time: "14:00", urgency: "today", customer: "晨星素质教育", title: "完成新线索首次联系", fact: "联系人、教室数量与升级计划", reason: "线上咨询进入 4 小时首响窗口", source: "线索自动化", owner: "我", action: "记录处理" },
-  { id: "demo-3", time: "16:00", urgency: "today", customer: "知行语言中心", title: "判断 ClassIn 是否有真实场景", fact: "异地教师联合授课频率", reason: "客户新增教室并提到异地授课", source: "产品机会", owner: "我", action: "记录判断" },
-  { id: "demo-4", time: "明天", urgency: "later", customer: "星河美术工作室", title: "确认暑期体验课时间", fact: "体验日期与参与老师", reason: "客户已同意体验，但尚未排期", source: "商机下一步", owner: "我", action: "开始跟进" },
+  { id: "demo-1", kind: "candidate", time: "10:30", urgency: "overdue", customer: "启航教育集团", title: "取得一体机演示后的校长确认", fact: "实际课堂适配结论", reason: "演示已完成 2 天，仍缺客户反馈", source: "演示规则", owner: "我", action: "演示建议" },
+  { id: "demo-2", kind: "candidate", time: "14:00", urgency: "today", customer: "晨星素质教育", title: "完成新线索首次联系", fact: "联系人、教室数量与升级计划", reason: "线上咨询进入 4 小时首响窗口", source: "新潜客规则", owner: "我", action: "演示建议" },
+  { id: "demo-3", kind: "candidate", time: "16:00", urgency: "today", customer: "知行语言中心", title: "判断 ClassIn 是否有真实场景", fact: "异地教师联合授课频率", reason: "客户新增教室并提到异地授课", source: "产品机会规则", owner: "我", action: "演示建议" },
+  { id: "demo-4", kind: "candidate", time: "明天", urgency: "later", customer: "星河美术工作室", title: "确认暑期体验课时间", fact: "体验日期与参与老师", reason: "客户已同意体验，但尚未排期", source: "商机下一步规则", owner: "我", action: "演示建议" },
 ];
 
 type CustomerLifecycle = "new" | "active" | "attention" | "paused" | "closed";
@@ -218,6 +224,9 @@ export default function Home() {
   const [taskTab, setTaskTab] = useState("待我处理");
   const [tasks, setTasks] = useState(initialTasks);
   const [taskDataState, setTaskDataState] = useState<"loading" | "real" | "fallback">("loading");
+  const [taskMessage, setTaskMessage] = useState<string | null>(null);
+  const [taskBusyId, setTaskBusyId] = useState<string | null>(null);
+  const [taskClock] = useState(() => Date.now());
   const [composerOpen, setComposerOpen] = useState(false);
   const [composeStep, setComposeStep] = useState<"write" | "review" | "done">("write");
   const [note, setNote] = useState("王校长确认一体机演示效果符合预期，准备先采购6台，希望下周收到正式报价。周五前我提交报价单。");
@@ -228,7 +237,7 @@ export default function Home() {
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
 
   const title = navigation.find((item) => item.id === view)?.label ?? "今日工作台";
-  const visibleTasks = useMemo(() => taskTab === "全部任务" ? tasks : taskTab === "已完成" ? [] : tasks, [taskTab, tasks]);
+  const visibleTasks = useMemo(() => taskTab === "全部任务" ? tasks : taskTab === "已完成" ? tasks.filter((task) => task.completed) : tasks.filter((task) => !task.completed), [taskTab, tasks]);
 
   useEffect(() => {
     fetch("/api/crm-auth/status", { cache: "no-store" })
@@ -243,13 +252,37 @@ export default function Home() {
     fetch("/api/crm/data?view=tasks", { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "任务候选查询失败");
-        const actions = Array.isArray(data.tasks?.actions) ? data.tasks.actions : [];
-        const mapped: TaskItem[] = actions.map((action: CrmRecord, index: number) => {
+        if (!response.ok) throw new Error(data.error || "任务中心查询失败");
+        const statusDictionary = Array.isArray(data.realTasks?.statusDictionary) ? data.realTasks.statusDictionary : [];
+        const statusLabels = new Map<string, string>(statusDictionary.map((item: CrmRecord) => [String(item.value), String(item.label || item.value)]));
+        const realRecords = Array.isArray(data.realTasks?.records) ? data.realTasks.records : [];
+        const realTasks: TaskItem[] = realRecords.map((record: CrmRecord) => {
+          const association = record.association && typeof record.association === "object" ? record.association as CrmRecord : {};
+          const due = crmDate(record.planFinishDate);
+          const statusLabel = statusLabels.get(String(record.status)) || `状态 ${String(record.status || "未知")}`;
+          return {
+            id: String(record.id), kind: "real", completed: /已完成|完成|closed|complete/i.test(statusLabel),
+            time: due ? shortDate(due) : "待定", urgency: due && due.getTime() < taskClock ? "overdue" : due && due.getTime() < taskClock + 86400000 ? "today" : "later",
+            customer: String(association.name || "企培任务"), title: String(record.taskName || "未命名任务"),
+            fact: String(record.description || record.taskRemark || "完成任务并记录取得的客户事实"),
+            reason: String(record.taskRemark || "销售易已下发任务"), source: `销售易任务 · ${statusLabel}`,
+            owner: "我", action: "完成", dueAt: record.planFinishDate as string | number | undefined,
+            associationId: association.id ? String(association.id) : undefined,
+            associationType: association.type === "opportunity" ? "opportunity" : "account", statusLabel,
+          };
+        });
+        const openRuleTaskRemarks = realRecords
+          .filter((_: CrmRecord, index: number) => !realTasks[index]?.completed)
+          .map((record: CrmRecord) => String(record.taskRemark || ""));
+        const actions = (Array.isArray(data.candidates?.actions) ? data.candidates.actions : [])
+          .filter((action: CrmRecord) => !openRuleTaskRemarks.some((remark: string) => remark.includes(`规则来源：${String(action.ruleId || "")}`)));
+        const candidates: TaskItem[] = actions.map((action: CrmRecord, index: number) => {
           const account = action.account && typeof action.account === "object" ? action.account as CrmRecord : {};
+          const evidence = action.evidence && typeof action.evidence === "object" ? action.evidence as CrmRecord : {};
           const priority = String(action.priority || "P2");
           return {
             id: `${String(action.ruleId || "rule")}-${index}`,
+            kind: "candidate",
             time: priority === "P0" ? "本周优先" : "本周",
             urgency: priority === "P0" ? "overdue" : priority === "P1" ? "today" : "later",
             customer: String(account.accountName || action.customerName || "经营任务"),
@@ -258,17 +291,19 @@ export default function Home() {
             reason: String(action.reason || "企培任务规则触发"),
             source: String(action.ruleId || "企培任务规则"),
             owner: "我",
-            action: "记录处理",
+            action: "生成任务",
+            associationId: String(account.accountId || evidence.accountId || "") || undefined,
+            associationType: "account",
           };
         });
         if (active) {
-          setTasks(mapped);
+          setTasks([...realTasks, ...candidates]);
           setTaskDataState("real");
         }
       })
       .catch(() => { if (active) setTaskDataState("fallback"); });
     return () => { active = false; };
-  }, [auth.state]);
+  }, [auth.state, taskClock]);
 
   useEffect(() => {
     if (auth.state !== "authenticated") return;
@@ -318,8 +353,73 @@ export default function Home() {
     setAuth({ state: "anonymous" });
   }
 
+  async function handleTaskPrimary(id: string) {
+    const task = tasks.find((item) => item.id === id);
+    if (!task || taskBusyId) return;
+    setTaskBusyId(id);
+    setTaskMessage(null);
+    try {
+      if (task.kind === "candidate") {
+        if (!task.associationId) throw new Error("该规则建议缺少明确客户，暂不能直接生成任务；请先进入客户或商机确认对象。");
+        const dueDate = new Date(taskClock + 86400000).toISOString().slice(0, 10);
+        const response = await fetch("/api/crm/actions", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "create-task", payload: {
+            taskName: task.title, planFinishDate: dueDate,
+            ...(task.associationType === "opportunity" ? { opportunityId: task.associationId } : { accountId: task.associationId }),
+            description: task.fact, taskRemark: `规则来源：${task.source}；触发原因：${task.reason}`,
+          } }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "规则建议生成任务失败");
+        const result = data.result?.data || data.result?.result || data.result || {};
+        setTasks((items) => items.map((item) => item.id === id ? {
+          ...item, id: String(result.id || `created-${id}`), kind: "real", source: "销售易任务 · 进行中",
+          statusLabel: "进行中", dueAt: dueDate, time: shortDate(dueDate), urgency: "today", action: "完成",
+        } : item));
+        setTaskMessage("规则建议已创建为真实销售易任务，截止到明天。");
+      } else {
+        const response = await fetch("/api/crm/actions", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "update-task", payload: { taskId: task.id, operation: "complete", taskRemark: "已在企培 CRM 任务中心确认完成" } }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "任务完成失败");
+        setTasks((items) => items.map((item) => item.id === id ? { ...item, completed: true, statusLabel: "已完成", source: "销售易任务 · 已完成", action: "已完成" } : item));
+        setTaskMessage("任务已在销售易中标记完成。");
+      }
+    } catch (error) {
+      setTaskMessage(error instanceof Error ? error.message : "任务更新失败");
+    } finally {
+      setTaskBusyId(null);
+    }
+  }
+
+  async function rescheduleTask(id: string) {
+    const task = tasks.find((item) => item.id === id);
+    if (!task || task.kind !== "real" || task.completed || taskBusyId) return;
+    setTaskBusyId(id);
+    setTaskMessage(null);
+    try {
+      const currentDue = crmDate(task.dueAt)?.getTime() || taskClock;
+      const nextDue = new Date(Math.max(currentDue, taskClock) + 86400000).toISOString().slice(0, 10);
+      const response = await fetch("/api/crm/actions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "update-task", payload: { taskId: task.id, operation: "reschedule", planFinishDate: nextDue, taskRemark: "在企培 CRM 任务中心延期一天" } }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "任务延期失败");
+      setTasks((items) => items.map((item) => item.id === id ? { ...item, dueAt: nextDue, time: shortDate(nextDue), urgency: "later" } : item));
+      setTaskMessage(`任务已延期到 ${shortDate(nextDue)}。`);
+    } catch (error) {
+      setTaskMessage(error instanceof Error ? error.message : "任务延期失败");
+    } finally {
+      setTaskBusyId(null);
+    }
+  }
+
   function finishTask(id: string) {
-    setTasks((items) => items.filter((item) => item.id !== id));
+    void handleTaskPrimary(id);
   }
 
   function openComposer() {
@@ -425,7 +525,7 @@ export default function Home() {
         </header>
 
         {view === "workbench" && <Workbench userName={displayName} tasks={tasks} onCompose={openComposer} onFinish={finishTask} onJump={setView} />}
-        {view === "tasks" && <TaskCenter tasks={visibleTasks} tab={taskTab} setTab={setTaskTab} dataState={taskDataState} onCompose={openComposer} />}
+        {view === "tasks" && <TaskCenter tasks={visibleTasks} tab={taskTab} setTab={setTaskTab} dataState={taskDataState} message={taskMessage} busyId={taskBusyId} onPrimary={handleTaskPrimary} onReschedule={rescheduleTask} onCompose={openComposer} />}
         {view === "customers" && <CustomerList onCompose={openComposer} />}
         {view === "opportunities" && <OpportunityList onCompose={openComposer} />}
         {view === "activities" && <ActivityView onCompose={openComposer} />}
@@ -442,6 +542,7 @@ function CrmLogin({ state, message, onLogin }: { state: "loading" | "anonymous" 
 }
 
 function Workbench({ userName, tasks, onCompose, onFinish, onJump }: { userName: string; tasks: TaskItem[]; onCompose: () => void; onFinish: (id: string) => void; onJump: (view: View) => void }) {
+  const openTasks = tasks.filter((task) => !task.completed);
   return <div className="page-content dashboard-page">
     <section className="morning-brief">
       <div><span className="eyebrow">星期一 · 8月3日</span><h2>早上好，{userName}。<br />今天先拿到 <b>3 个客户事实</b>。</h2><p>系统已按时效、客户承诺和商机风险排好顺序。你只需要从第一项开始。</p><div className="brief-actions"><button className="primary-button light" onClick={onCompose}>记录一段客户进展</button><button className="text-button" onClick={() => onJump("tasks")}>查看今日完整安排 →</button></div></div>
@@ -458,7 +559,7 @@ function Workbench({ userName, tasks, onCompose, onFinish, onJump }: { userName:
     <div className="content-grid">
       <section className="panel priority-panel">
         <PanelHeading eyebrow="按事实排序" title="现在最值得做" subtitle="每项任务都说明原因和需要取得的结果" action="查看全部" onAction={() => onJump("tasks")} />
-        <div className="priority-list">{tasks.slice(0, 3).map((task, index) => <PriorityTask key={task.id} task={task} index={index + 1} onFinish={onFinish} />)}</div>
+        <div className="priority-list">{openTasks.slice(0, 3).map((task, index) => <PriorityTask key={task.id} task={task} index={index + 1} onFinish={onFinish} />)}</div>
       </section>
       <aside className="panel ai-guide">
         <div className="ai-heading"><span className="ai-orb">✦</span><div><span className="eyebrow">今日智能简报</span><h3>先处理体验反馈，再补预测缺口</h3></div></div>
@@ -494,11 +595,13 @@ function PriorityTask({ task, index, onFinish }: { task: TaskItem; index: number
   return <article className="priority-task"><span className={`task-order ${task.urgency}`}>{index}</span><div className="task-main"><div className="task-meta"><span>{task.time}</span><i /> <span>{task.source}</span></div><h4>{task.title}</h4><p><strong>{task.customer}</strong> · 要取得：{task.fact}</p><small>触发原因：{task.reason}</small></div><button className="task-action" onClick={() => onFinish(task.id)}>{task.action}</button></article>;
 }
 
-function TaskCenter({ tasks, tab, setTab, dataState, onCompose }: { tasks: TaskItem[]; tab: string; setTab: (v: string) => void; dataState: "loading" | "real" | "fallback"; onCompose: () => void }) {
+function TaskCenter({ tasks, tab, setTab, dataState, message, busyId, onPrimary, onReschedule, onCompose }: { tasks: TaskItem[]; tab: string; setTab: (v: string) => void; dataState: "loading" | "real" | "fallback"; message: string | null; busyId: string | null; onPrimary: (id: string) => Promise<void>; onReschedule: (id: string) => Promise<void>; onCompose: () => void }) {
   return <div className="page-content"><section className="page-intro"><div><span className="eyebrow">统一行动中心</span><h2>不是“做完待办”，而是取得下一项客户事实</h2><p>线索、客户、商机和活动任务在这里统一排序，同时保留它为什么出现。</p></div><button className="primary-button" onClick={onCompose}>＋ 记录处理结果</button></section>
-    <section className="panel table-panel"><div className="filter-row"><div className="tabs">{["待我处理", "全部任务", "已完成"].map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><span className={`data-source-badge ${dataState}`}>{dataState === "real" ? "企培 MCP 规则任务" : dataState === "loading" ? "正在生成本周任务" : "演示任务 · MCP 暂不可用"}</span></div>
+    {message && <div className="board-notice" role="status"><span>✓</span><p>{message}</p></div>}
+    <section className="task-explain"><article><strong>真实任务</strong><span>已经存在于销售易，可完成或延期</span></article><article><strong>规则建议</strong><span>满足企培已确认规则，人工确认后才生成任务</span></article></section>
+    <section className="panel table-panel"><div className="filter-row"><div className="tabs">{["待我处理", "全部任务", "已完成"].map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><span className={`data-source-badge ${dataState}`}>{dataState === "real" ? "销售易真实任务 + 企培规则建议" : dataState === "loading" ? "正在同步任务中心" : "演示任务 · MCP 暂不可用"}</span></div>
       <div className="task-table"><div className="task-table-head"><span>时效</span><span>任务与对象</span><span>需要取得的事实</span><span>为什么出现</span><span>负责人</span><span /></div>
-      {tasks.length ? tasks.map((task) => <div className="task-table-row" key={task.id}><span className={`due ${task.urgency}`}>{task.time}</span><div><strong>{task.title}</strong><small>{task.customer} · {task.source}</small></div><span>{task.fact}</span><span>{task.reason}</span><span>{task.owner}</span><button onClick={onCompose}>{task.action}</button></div>) : <div className="empty-state">当前规则没有生成待处理事项。</div>}
+      {tasks.length ? tasks.map((task) => <div className="task-table-row" key={task.id}><span className={`due ${task.urgency}`}>{task.time}</span><div><strong>{task.title}</strong><small>{task.customer} · {task.kind === "candidate" ? "规则建议" : task.statusLabel || "真实任务"} · {task.source}</small></div><span>{task.fact}</span><span>{task.reason}</span><span>{task.owner}</span><div className="task-row-actions">{task.kind === "real" && !task.completed && <button onClick={() => void onReschedule(task.id)} disabled={busyId === task.id}>延期一天</button>}<button onClick={() => task.completed ? onCompose() : void onPrimary(task.id)} disabled={busyId === task.id || task.completed}>{busyId === task.id ? "处理中…" : task.completed ? "已完成" : task.action}</button></div></div>) : <div className="empty-state">当前筛选下没有任务或规则建议。</div>}
       </div>
     </section>
   </div>;

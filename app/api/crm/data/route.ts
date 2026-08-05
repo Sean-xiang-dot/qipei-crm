@@ -69,12 +69,16 @@ export async function GET(request: NextRequest) {
     }
 
     if (view === "tasks") {
-      const tasks = await upstreamJson(`/api/weekly-actions?${ownerQuery}`, token);
+      const [realTasks, candidates] = await Promise.all([
+        upstreamJson(`/api/tasks?${ownerQuery}&limit=200`, token),
+        upstreamJson(`/api/weekly-actions?${ownerQuery}`, token),
+      ]);
       return NextResponse.json({
         source: "enterprise-training-mcp",
         asOf: new Date().toISOString(),
         user: whoami,
-        tasks,
+        realTasks,
+        candidates,
       });
     }
 
