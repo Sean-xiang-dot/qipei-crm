@@ -103,6 +103,7 @@ type AnalysisResult = {
 };
 
 type CustomerOption = { id: string; name: string };
+type OpportunityOption = { id: string; name: string; accountId: string; stageId?: string; updatedAt?: string | number };
 
 const initialCustomers: CustomerItem[] = [
   { id: "customer-1", name: "启航教育集团", form: "教育机构", city: "上海", owner: "顾然", products: "一体机 · ClassIn", next: "今天 10:30", health: "待反馈", tone: "amber", lifecycle: "attention", lastFact: "演示完成，等待校长确认课堂适配结果", lastActiveDays: 2, version: 0 },
@@ -235,6 +236,11 @@ export default function Home() {
   const [composeMessage, setComposeMessage] = useState<string | null>(null);
   const [customerOptions, setCustomerOptions] = useState<CustomerOption[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [opportunityOptions, setOpportunityOptions] = useState<OpportunityOption[]>([]);
+  const [selectedOpportunityId, setSelectedOpportunityId] = useState("");
+  const [composeStageIds, setComposeStageIds] = useState<Partial<Record<Exclude<FunnelStage, "lead">, string>>>({});
+  const [applySuggestedStage, setApplySuggestedStage] = useState(false);
+  const [composeIdempotencyKey, setComposeIdempotencyKey] = useState(() => `followup-${Date.now()}`);
 
   const title = navigation.find((item) => item.id === view)?.label ?? "今日工作台";
   const visibleTasks = useMemo(() => taskTab === "全部任务" ? tasks : taskTab === "已完成" ? tasks.filter((task) => task.completed) : tasks.filter((task) => !task.completed), [taskTab, tasks]);
@@ -308,13 +314,27 @@ export default function Home() {
   useEffect(() => {
     if (auth.state !== "authenticated") return;
     let active = true;
-    fetch("/api/crm/data?view=customers", { cache: "no-store" })
+    fetch("/api/crm/data?view=pipeline", { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "客户查询失败");
         const options = (Array.isArray(data.customers?.records) ? data.customers.records : []).map((record: CrmRecord) => ({ id: String(record.id), name: String(record.accountName || "未命名客户") }));
+        const opportunities = (Array.isArray(data.opportunities?.records) ? data.opportunities.records : []).map((record: CrmRecord) => ({
+          id: String(record.id), name: String(record.opportunityName || "未命名商机"), accountId: String(record.accountId || ""),
+          stageId: record.saleStageId ? String(record.saleStageId) : undefined,
+          updatedAt: record.updatedAt as string | number | undefined,
+        }));
+        const stageIds: Partial<Record<Exclude<FunnelStage, "lead">, string>> = {};
+        (Array.isArray(data.stageDictionary?.stages) ? data.stageDictionary.stages : []).forEach((record: CrmRecord) => {
+          const normalized = String(record.normalizedStage || "") === "business" ? "commercial" : String(record.normalizedStage || "");
+          if (["interest", "experience", "validation", "commercial"].includes(normalized) && record.stageId) {
+            stageIds[normalized as Exclude<FunnelStage, "lead">] = String(record.stageId);
+          }
+        });
         if (active) {
           setCustomerOptions(options);
+          setOpportunityOptions(opportunities);
+          setComposeStageIds(stageIds);
           setSelectedCustomerId((current) => current || options[0]?.id || "");
         }
       })
@@ -426,6 +446,9 @@ export default function Home() {
     setComposeStep("write");
     setAnalysis(null);
     setComposeMessage(null);
+    setSelectedOpportunityId("");
+    setApplySuggestedStage(false);
+    setComposeIdempotencyKey(`followup-${crypto.randomUUID()}`);
     setComposerOpen(true);
   }
 
@@ -434,10 +457,11 @@ export default function Home() {
     setComposeMessage(null);
     try {
       const customer = customerOptions.find((item) => item.id === selectedCustomerId);
+      const opportunity = opportunityOptions.find((item) => item.id === selectedOpportunityId);
       const response = await fetch("/api/crm/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note, context: { accountId: selectedCustomerId, accountName: customer?.name } }),
+        body: JSON.stringify({ note, context: { accountId: selectedCustomerId, accountName: customer?.name, opportunityId: opportunity?.id, opportunityName: opportunity?.name } }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "智能分析失败");
@@ -464,28 +488,30 @@ export default function Home() {
         `- 建议下一任务：${analysis.nextTask.title}`,
         `- 目标事实：${analysis.nextTask.targetFact}`,
       ].join("\n");
+      const selectedOpportunity = opportunityOptions.find((item) => item.id === selectedOpportunityId);
+      const suggestedStageId = analysis.suggestedStage ? composeStageIds[analysis.suggestedStage] : undefined;
+      const defaultDue = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
       const response = await fetch("/api/crm/actions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create-activity", payload: { accountId: selectedCustomerId, content: structuredSummary, startTime: Date.now() } }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "活动写入失败");
-      const defaultDue = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
-      const taskResponse = await fetch("/api/crm/actions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create-task", payload: {
-          taskName: analysis.nextTask.title,
-          planFinishDate: analysis.nextTask.dueDate || defaultDue,
+        body: JSON.stringify({ action: "confirm-followup", payload: {
+          idempotencyKey: composeIdempotencyKey,
           accountId: selectedCustomerId,
-          description: `目标事实：${analysis.nextTask.targetFact}`,
-          taskRemark: `由拜访/沟通记录智能分析生成；分析来源：${analysis.provider}`,
+          ...(selectedOpportunity ? { opportunityId: selectedOpportunity.id } : {}),
+          activity: { content: structuredSummary, startTime: Date.now() },
+          task: { taskName: analysis.nextTask.title, planFinishDate: analysis.nextTask.dueDate || defaultDue, targetFact: analysis.nextTask.targetFact },
+          ...(applySuggestedStage && selectedOpportunity && suggestedStageId ? { stage: {
+            saleStageId: suggestedStageId,
+            expectedUpdatedAt: selectedOpportunity.updatedAt,
+            evidence: analysis.stageReason,
+          } } : {}),
         } }),
       });
-      const taskData = await taskResponse.json();
-      if (!taskResponse.ok) throw new Error(`活动已写入，但下一任务创建失败：${taskData.error || "未知错误"}`);
-      setComposeMessage("客户活动和下一任务已写入销售易；商机阶段建议已保留，需在具体商机上确认后再变更。");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "客户进展写入失败；可直接重试，已完成步骤不会重复创建");
+      setComposeMessage(applySuggestedStage && selectedOpportunity && suggestedStageId
+        ? "客户活动、商机任务和确认后的阶段已写入销售易。"
+        : `客户活动和下一任务已写入销售易${selectedOpportunity ? "，任务已关联到具体商机" : ""}。`);
       setComposeStep("done");
     } catch (error) {
       setComposeMessage(error instanceof Error ? error.message : "同步更新失败");
@@ -532,7 +558,7 @@ export default function Home() {
         {view === "insights" && <InsightView />}
       </section>
 
-      {composerOpen && <Composer step={composeStep} note={note} setNote={setNote} analysis={analysis} busy={composeBusy} message={composeMessage} customers={customerOptions} selectedCustomerId={selectedCustomerId} setSelectedCustomerId={setSelectedCustomerId} onClose={() => setComposerOpen(false)} onAnalyze={analyzeNote} onBack={() => setComposeStep("write")} onConfirm={confirmUpdate} />}
+      {composerOpen && <Composer step={composeStep} note={note} setNote={setNote} analysis={analysis} busy={composeBusy} message={composeMessage} customers={customerOptions} selectedCustomerId={selectedCustomerId} setSelectedCustomerId={(id) => { setSelectedCustomerId(id); setSelectedOpportunityId(""); setApplySuggestedStage(false); }} opportunities={opportunityOptions.filter((item) => item.accountId === selectedCustomerId)} selectedOpportunityId={selectedOpportunityId} setSelectedOpportunityId={(id) => { setSelectedOpportunityId(id); setApplySuggestedStage(false); }} applySuggestedStage={applySuggestedStage} setApplySuggestedStage={setApplySuggestedStage} stageCanApply={Boolean(analysis?.suggestedStage && composeStageIds[analysis.suggestedStage])} onClose={() => setComposerOpen(false)} onAnalyze={analyzeNote} onBack={() => setComposeStep("write")} onConfirm={confirmUpdate} />}
     </main>
   );
 }
@@ -1279,13 +1305,13 @@ function InsightView() {
   </div>;
 }
 
-function Composer({ step, note, setNote, analysis, busy, message, customers, selectedCustomerId, setSelectedCustomerId, onClose, onAnalyze, onBack, onConfirm }: { step: "write" | "review" | "done"; note: string; setNote: (v: string) => void; analysis: AnalysisResult | null; busy: boolean; message: string | null; customers: CustomerOption[]; selectedCustomerId: string; setSelectedCustomerId: (id: string) => void; onClose: () => void; onAnalyze: () => void; onBack: () => void; onConfirm: () => void }) {
+function Composer({ step, note, setNote, analysis, busy, message, customers, selectedCustomerId, setSelectedCustomerId, opportunities, selectedOpportunityId, setSelectedOpportunityId, applySuggestedStage, setApplySuggestedStage, stageCanApply, onClose, onAnalyze, onBack, onConfirm }: { step: "write" | "review" | "done"; note: string; setNote: (v: string) => void; analysis: AnalysisResult | null; busy: boolean; message: string | null; customers: CustomerOption[]; selectedCustomerId: string; setSelectedCustomerId: (id: string) => void; opportunities: OpportunityOption[]; selectedOpportunityId: string; setSelectedOpportunityId: (id: string) => void; applySuggestedStage: boolean; setApplySuggestedStage: (value: boolean) => void; stageCanApply: boolean; onClose: () => void; onAnalyze: () => void; onBack: () => void; onConfirm: () => void }) {
   const stageLabel = analysis?.suggestedStage ? funnelStages.find((stage) => stage.id === analysis.suggestedStage)?.label : null;
   return <div className="modal-backdrop" role="presentation"><section className="composer" role="dialog" aria-modal="true" aria-label="记录客户进展">
     <header><div><span className="eyebrow">一次记录 · 人工确认后写回</span><h2>{step === "write" ? "刚刚和客户发生了什么？" : step === "review" ? "请确认系统理解是否正确" : "客户活动与任务已同步"}</h2><p>{step === "write" ? "像给同事发消息一样描述即可，系统会先整理、再由你确认。" : step === "review" ? "系统只整理可见事实，不会替客户作出承诺。" : "原始记录、整理事实和下一任务已经写入销售易。"}</p></div><button className="modal-close" onClick={onClose}>×</button></header>
     {message && <div className="board-notice">{message}</div>}
-    {step === "write" && <div className="compose-body"><label className="context-select"><span>关联客户</span><select aria-label="选择关联客户" value={selectedCustomerId} onChange={(event) => setSelectedCustomerId(event.target.value)}><option value="">请选择真实 CRM 客户</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label><div className="note-box"><textarea value={note} onChange={(e) => setNote(e.target.value)} aria-label="客户进展内容" placeholder="例如：王校长确认演示效果，准备先采购6台，希望下周收到报价……" /><div><span>支持粘贴企微、拜访或面聊记录</span><span>{note.length} 字</span></div></div><div className="quick-prompts"><span>也可以快速补充：</span><button onClick={() => setNote(note + " 客户已确认使用场景。")}>客户承诺</button><button onClick={() => setNote(note + " 体验结果已确认。")}>体验结果</button><button onClick={() => setNote(note + " 下一步需要提交报价。")}>下一步</button></div><div className="compose-tip"><span>✦</span><p><strong>系统会尝试整理</strong>客户事实、产品与数量、商机阶段依据以及下一任务。未配置模型时会明确使用本地规则分析。</p></div></div>}
-    {step === "review" && analysis && <div className="review-body"><div className="source-note"><span>客户原始记录 · 分析来源 {analysis.provider}</span><p>{note}</p></div><div className="change-section"><header><h3>识别出的客户事实</h3><span>{analysis.facts.length} 项</span></header>{analysis.facts.map((fact, index) => <div className="change-row" key={`${fact.type}-${index}`}><i className="change-mark green">✓</i><div><span>{fact.type}</span><strong>{fact.value}</strong><small>{fact.evidence ? `依据：${fact.evidence}` : "来源：本次客户沟通"}</small></div></div>)}</div><div className="change-section"><header><h3>建议联动</h3><span>2 项</span></header><div className="change-row"><i className="change-mark amber">机</i><div><span>商机阶段建议</span><strong>{stageLabel || "暂不变更阶段"}</strong><small>{analysis.stageReason}</small></div></div><div className="change-row"><i className="change-mark indigo">任</i><div><span>下一任务建议</span><strong>{analysis.nextTask.title}</strong><small>目标事实：{analysis.nextTask.targetFact}</small></div></div></div>{analysis.warnings?.map((warning) => <div className="guardrail" key={warning}>{warning}</div>)}<div className="guardrail">确认后会写入原始活动并创建下一任务。商机阶段必须在具体商机卡片上再次确认，避免把客户层面的沟通误写到错误商机。</div></div>}
+    {step === "write" && <div className="compose-body"><label className="context-select"><span>关联客户</span><select aria-label="选择关联客户" value={selectedCustomerId} onChange={(event) => setSelectedCustomerId(event.target.value)}><option value="">请选择真实 CRM 客户</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label><label className="context-select opportunity-select"><span>关联商机（可选）</span><select aria-label="选择关联商机" value={selectedOpportunityId} onChange={(event) => setSelectedOpportunityId(event.target.value)}><option value="">只更新客户并把任务关联到客户</option>{opportunities.map((opportunity) => <option key={opportunity.id} value={opportunity.id}>{opportunity.name}</option>)}</select><small>{opportunities.length ? "选择后，下一任务会直接归属该商机；阶段仍需在下一步单独确认。" : "该客户当前没有可见的企培商机。"}</small></label><div className="note-box"><textarea value={note} onChange={(e) => setNote(e.target.value)} aria-label="客户进展内容" placeholder="例如：王校长确认演示效果，准备先采购6台，希望下周收到报价……" /><div><span>支持粘贴企微、拜访或面聊记录</span><span>{note.length} 字</span></div></div><div className="quick-prompts"><span>也可以快速补充：</span><button onClick={() => setNote(note + " 客户已确认使用场景。")}>客户承诺</button><button onClick={() => setNote(note + " 体验结果已确认。")}>体验结果</button><button onClick={() => setNote(note + " 下一步需要提交报价。")}>下一步</button></div><div className="compose-tip"><span>✦</span><p><strong>系统会尝试整理</strong>客户事实、产品与数量、商机阶段依据以及下一任务。未配置模型时会明确使用本地规则分析。</p></div></div>}
+    {step === "review" && analysis && <div className="review-body"><div className="source-note"><span>客户原始记录 · 分析来源 {analysis.provider}</span><p>{note}</p></div><div className="change-section"><header><h3>识别出的客户事实</h3><span>{analysis.facts.length} 项</span></header>{analysis.facts.map((fact, index) => <div className="change-row" key={`${fact.type}-${index}`}><i className="change-mark green">✓</i><div><span>{fact.type}</span><strong>{fact.value}</strong><small>{fact.evidence ? `依据：${fact.evidence}` : "来源：本次客户沟通"}</small></div></div>)}</div><div className="change-section"><header><h3>建议联动</h3><span>2 项</span></header><div className="change-row"><i className="change-mark amber">机</i><div><span>商机阶段建议</span><strong>{stageLabel || "暂不变更阶段"}</strong><small>{analysis.stageReason}</small>{selectedOpportunityId && analysis.suggestedStage && <label className="stage-confirm"><input type="checkbox" checked={applySuggestedStage} disabled={!stageCanApply} onChange={(event) => setApplySuggestedStage(event.target.checked)} /><span>{stageCanApply ? "我确认把所选商机同步到该阶段" : "销售易阶段字典中没有安全映射，暂不写入"}</span></label>}</div></div><div className="change-row"><i className="change-mark indigo">任</i><div><span>下一任务建议</span><strong>{analysis.nextTask.title}</strong><small>目标事实：{analysis.nextTask.targetFact}</small></div></div></div>{analysis.warnings?.map((warning) => <div className="guardrail" key={warning}>{warning}</div>)}<div className="guardrail">确认后会以同一写入编号创建活动与下一任务；失败后可直接重试，不会重复创建已完成步骤。只有选择具体商机并勾选确认时，才会同步阶段。</div></div>}
     {step === "done" && <div className="done-state"><span>✓</span><h3>活动记录和下一任务已写入</h3><p>原始沟通、识别事实和下一任务已同步销售易；商机阶段建议保留给销售在具体商机上确认。</p></div>}
     {step !== "done" && <footer>{step === "review" ? <button className="secondary-button" onClick={onBack} disabled={busy}>返回修改</button> : <button className="secondary-button" onClick={onClose} disabled={busy}>取消</button>}<button className="primary-button" onClick={step === "write" ? onAnalyze : onConfirm} disabled={busy || !note.trim() || !selectedCustomerId}>{busy ? "正在处理…" : step === "write" ? "✦ 智能整理本次进展" : "确认并写入活动与任务"}</button></footer>}
   </section></div>;

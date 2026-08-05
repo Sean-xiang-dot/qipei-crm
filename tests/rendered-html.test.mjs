@@ -41,6 +41,7 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(actionRoute, /create-activity/);
   assert.match(actionRoute, /create-task/);
   assert.match(actionRoute, /update-task/);
+  assert.match(actionRoute, /confirm-followup/);
   assert.match(dataRoute, /api\/tasks/);
   assert.match(dataRoute, /weekly-actions/);
   assert.match(actionRoute, /create-opportunity/);
@@ -58,4 +59,6 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(page, /已经存在于销售易，可完成或延期/);
   assert.match(page, /人工确认后才生成任务/);
   assert.match(page, /规则来源：/);
+  assert.match(page, /失败后可直接重试，不会重复创建已完成步骤/);
+  assert.match(page, /选择具体商机并勾选确认时，才会同步阶段/);
 });

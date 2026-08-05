@@ -46,3 +46,6 @@
 .task-explain span{font-size:9px;color:#848da1}
 @media(max-width:1100px){.task-table-head,.task-table-row{grid-template-columns:65px 1.4fr 1fr 150px}}
 @media(max-width:760px){.task-explain{grid-template-columns:1fr}.task-table-head,.task-table-row{min-width:740px}}
+.opportunity-select{display:block;margin-top:12px}.opportunity-select>small{display:block;margin-top:6px;color:#929aad;font-size:8px;line-height:1.5}
+.stage-confirm{display:flex;align-items:center;gap:7px;margin-top:9px;width:max-content;max-width:100%;padding:7px 9px;border-radius:8px;background:#fff8e9;color:#8e6529;font-size:8px;cursor:pointer}
+.stage-confirm input{accent-color:#6355cf}.stage-confirm input:disabled{cursor:not-allowed}.stage-confirm span{color:inherit}
