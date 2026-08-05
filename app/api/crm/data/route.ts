@@ -33,6 +33,17 @@ async function upstreamJson(path: string, token: string): Promise<JsonObject> {
   return data;
 }
 
+async function upstreamPost(path: string, body: JsonObject, token: string): Promise<JsonObject> {
+  const response = await crmMcpFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }, token);
+  const data = objectValue(await response.json().catch(() => ({})));
+  if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : `${path} 查询失败`);
+  return data;
+}
+
 function ownerIdFromWhoami(data: JsonObject): string {
   const user = objectValue(data.user);
   const context = objectValue(data.userContext);
@@ -57,6 +68,54 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ source: "enterprise-training-mcp", asOf: new Date().toISOString(), user: whoami, userName: String(whoami.user || "当前用户"), customers });
     }
 
+    if (view === "tasks") {
+      const [realTasks, candidates] = await Promise.all([
+        upstreamJson(`/api/tasks?${ownerQuery}&limit=200`, token),
+        upstreamJson(`/api/weekly-actions?${ownerQuery}`, token),
+      ]);
+      return NextResponse.json({
+        source: "enterprise-training-mcp",
+        asOf: new Date().toISOString(),
+        user: whoami,
+        realTasks,
+        candidates,
+      });
+    }
+
+    if (view === "pipeline") {
+      const [opportunities, customers, stageDictionary, leads] = await Promise.all([
+        upstreamJson(`/api/opportunities?${ownerQuery}&limit=100`, token),
+        upstreamJson(`/api/customers?${ownerQuery}&limit=100`, token),
+        upstreamJson("/api/metadata/opportunity-stages", token),
+        upstreamPost("/api/soql", {
+          soql: `SELECT id,name,companyName,mobile,ownerId,createdAt,updatedAt FROM lead WHERE ownerId = ${ownerId} ORDER BY updatedAt DESC LIMIT 100`,
+        }, token).catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" })),
+      ]);
+      const opportunityRecords = Array.isArray(opportunities.records) ? opportunities.records as Array<Record<string, unknown>> : [];
+      const opportunityIds = opportunityRecords.map(record => String(record.id || "")).filter(Boolean);
+      const opportunityLifecycle = opportunityIds.length
+        ? await upstreamJson(`/api/opportunity-lifecycle?opportunityIds=${encodeURIComponent(opportunityIds.join(","))}`, token)
+        : { records: {} };
+      return NextResponse.json({
+        source: "enterprise-training-mcp",
+        asOf: new Date().toISOString(),
+        user: whoami,
+        opportunities,
+        customers,
+        stageDictionary,
+        leads,
+        opportunityLifecycle,
+      });
+    }
+
+    if (view === "activities") {
+      const now = new Date();
+      const to = shanghaiDate(now);
+      const from = shanghaiDate(new Date(now.getTime() - 90 * 86400000));
+      const activities = await upstreamJson(`/api/activities?${ownerQuery}&from=${from}&to=${to}&limit=100`, token);
+      return NextResponse.json({ source: "enterprise-training-mcp", asOf: new Date().toISOString(), period: { from, to }, activities });
+    }
+
     if (view === "forecast") {
       const now = new Date();
       const from = shanghaiDate(now);
@@ -74,11 +133,14 @@ export async function GET(request: NextRequest) {
       const to = shanghaiDate(now);
       const fromDate = period === "quarter" ? startOfQuarter(now) : new Date(Date.UTC(now.getUTCFullYear() - 1, now.getUTCMonth(), now.getUTCDate()));
       const from = shanghaiDate(fromDate);
-      const [customers, opportunities, summary, activities] = await Promise.all([
+      const [customers, opportunities, summary, activities, productMix, stageDictionary, experienceFunnel] = await Promise.all([
         upstreamJson(`/api/customers?${ownerQuery}&limit=100`, token),
         upstreamJson(`/api/opportunities?${ownerQuery}&from=${from}&to=${to}&dateField=updatedAt&limit=100`, token),
         upstreamJson(`/api/dashboard/sales-summary?${ownerQuery}&from=${from}&to=${to}`, token),
         upstreamJson(`/api/activities?${ownerQuery}&from=${from}&to=${to}&limit=200`, token),
+        upstreamJson(`/api/dashboard/customer-product-mix?${ownerQuery}&from=${from}&to=${to}`, token),
+        upstreamJson("/api/metadata/opportunity-stages", token),
+        upstreamJson(`/api/dashboard/experience-funnel?${ownerQuery}&from=${from}&to=${to}`, token),
       ]);
       return NextResponse.json({
         source: "enterprise-training-mcp",
@@ -88,12 +150,15 @@ export async function GET(request: NextRequest) {
         opportunities,
         summary,
         activities,
+        productMix,
+        stageDictionary,
+        experienceFunnel,
         coverage: {
           customerForm: "real",
           revenue: "real",
           activityQuality: "real",
-          productCombination: "needs-order-line-aggregation",
-          experienceStageConversion: "needs-stage-dictionary",
+          productCombination: "real-order-line-aggregation",
+          experienceStageConversion: "snapshot-only-no-stage-history",
         },
       });
     }
