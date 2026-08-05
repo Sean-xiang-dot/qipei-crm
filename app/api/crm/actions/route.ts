@@ -48,6 +48,17 @@ export async function POST(request: NextRequest) {
     if (!taskId) return NextResponse.json({ error: "缺少 taskId" }, { status: 400 });
     return forward(`/api/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, token);
   }
+  if (action === "confirm-followup") {
+    const payload = objectValue(body.payload);
+    const activity = objectValue(payload.activity);
+    return forward("/api/followups/confirm", "POST", {
+      ...payload,
+      activity: {
+        ...activity,
+        entityType: activity.entityType || process.env.CRM_DEFAULT_ACTIVITY_ENTITY_TYPE || "11010011100002",
+      },
+    }, token);
+  }
   if (action === "create-opportunity") {
     return forward("/api/opportunities", "POST", objectValue(body.payload), token);
   }
