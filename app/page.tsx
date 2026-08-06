@@ -22,6 +22,8 @@ type TaskItem = {
   fact: string;
   reason: string;
   source: string;
+  ruleId?: string;
+  candidateKey?: string;
   owner: string;
   action: string;
   kind?: "real" | "candidate";
@@ -277,17 +279,36 @@ export default function Home() {
             associationType: association.type === "opportunity" ? "opportunity" : "account", statusLabel,
           };
         });
-        const openRuleTaskRemarks = realRecords
+        const openRuleTasks = realRecords
           .filter((_: CrmRecord, index: number) => !realTasks[index]?.completed)
-          .map((record: CrmRecord) => String(record.taskRemark || ""));
+          .map((record: CrmRecord) => {
+            const association = record.association && typeof record.association === "object" ? record.association as CrmRecord : {};
+            return { remark: String(record.taskRemark || ""), associationId: String(association.id || "") };
+          });
         const actions = (Array.isArray(data.candidates?.actions) ? data.candidates.actions : [])
-          .filter((action: CrmRecord) => !openRuleTaskRemarks.some((remark: string) => remark.includes(`规则来源：${String(action.ruleId || "")}`)));
+          .filter((action: CrmRecord) => {
+            const account = action.account && typeof action.account === "object" ? action.account as CrmRecord : {};
+            const evidence = action.evidence && typeof action.evidence === "object" ? action.evidence as CrmRecord : {};
+            const candidateKey = String(action.candidateKey || "");
+            const ruleId = String(action.ruleId || "");
+            const accountId = String(account.accountId || evidence.accountId || "");
+            return !openRuleTasks.some(({ remark, associationId }: { remark: string; associationId: string }) =>
+              (candidateKey && remark.includes(`候选编号：${candidateKey}`)) ||
+              (!remark.includes("候选编号：") && accountId && associationId === accountId && remark.includes(`规则来源：${ruleId}`))
+            );
+          });
         const candidates: TaskItem[] = actions.map((action: CrmRecord, index: number) => {
           const account = action.account && typeof action.account === "object" ? action.account as CrmRecord : {};
           const evidence = action.evidence && typeof action.evidence === "object" ? action.evidence as CrmRecord : {};
+          const period = evidence.period && typeof evidence.period === "object" ? evidence.period as CrmRecord : {};
           const priority = String(action.priority || "P2");
+          const ruleId = String(action.ruleId || "企培任务规则");
+          const candidateKey = String(action.candidateKey || `${ruleId}:${String(account.accountId || evidence.accountId || index)}`);
+          const source = ruleId.startsWith("usage_zero_") && period.from && period.to
+            ? `数仓使用规则 · ${String(period.from)}—${String(period.to)}`
+            : ruleId;
           return {
-            id: `${String(action.ruleId || "rule")}-${index}`,
+            id: candidateKey,
             kind: "candidate",
             time: priority === "P0" ? "本周优先" : "本周",
             urgency: priority === "P0" ? "overdue" : priority === "P1" ? "today" : "later",
@@ -295,7 +316,9 @@ export default function Home() {
             title: String(action.title || "待处理任务"),
             fact: String(action.suggestedAction || "取得下一项客户事实"),
             reason: String(action.reason || "企培任务规则触发"),
-            source: String(action.ruleId || "企培任务规则"),
+            source,
+            ruleId,
+            candidateKey,
             owner: "我",
             action: "生成任务",
             associationId: String(account.accountId || evidence.accountId || "") || undefined,
@@ -387,7 +410,7 @@ export default function Home() {
           body: JSON.stringify({ action: "create-task", payload: {
             taskName: task.title, planFinishDate: dueDate,
             ...(task.associationType === "opportunity" ? { opportunityId: task.associationId } : { accountId: task.associationId }),
-            description: task.fact, taskRemark: `规则来源：${task.source}；触发原因：${task.reason}`,
+            description: task.fact, taskRemark: `规则来源：${task.ruleId || task.source}；候选编号：${task.candidateKey || task.id}；触发原因：${task.reason}`,
           } }),
         });
         const data = await response.json();
