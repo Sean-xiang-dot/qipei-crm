@@ -30,7 +30,7 @@ type TaskItem = {
   completed?: boolean;
   dueAt?: string | number;
   associationId?: string;
-  associationType?: "account" | "opportunity";
+  associationType?: "lead" | "account" | "opportunity";
   statusLabel?: string;
 };
 
@@ -276,7 +276,7 @@ export default function Home() {
             reason: String(record.taskRemark || "销售易已下发任务"), source: `销售易任务 · ${statusLabel}`,
             owner: "我", action: "完成", dueAt: record.planFinishDate as string | number | undefined,
             associationId: association.id ? String(association.id) : undefined,
-            associationType: association.type === "opportunity" ? "opportunity" : "account", statusLabel,
+            associationType: association.type === "lead" ? "lead" : association.type === "opportunity" ? "opportunity" : "account", statusLabel,
           };
         });
         const openRuleTasks = realRecords
@@ -289,10 +289,11 @@ export default function Home() {
           .filter((action: CrmRecord) => {
             const account = action.account && typeof action.account === "object" ? action.account as CrmRecord : {};
             const opportunity = action.opportunity && typeof action.opportunity === "object" ? action.opportunity as CrmRecord : {};
+            const lead = action.lead && typeof action.lead === "object" ? action.lead as CrmRecord : {};
             const evidence = action.evidence && typeof action.evidence === "object" ? action.evidence as CrmRecord : {};
             const candidateKey = String(action.candidateKey || "");
             const ruleId = String(action.ruleId || "");
-            const candidateAssociationId = String(opportunity.opportunityId || evidence.opportunityId || account.accountId || evidence.accountId || "");
+            const candidateAssociationId = String(lead.leadId || evidence.leadId || opportunity.opportunityId || evidence.opportunityId || account.accountId || evidence.accountId || "");
             return !openRuleTasks.some(({ remark, associationId: openAssociationId }: { remark: string; associationId: string }) =>
               (candidateKey && remark.includes(`候选编号：${candidateKey}`)) ||
               (!remark.includes("候选编号：") && candidateAssociationId && openAssociationId === candidateAssociationId && remark.includes(`规则来源：${ruleId}`))
@@ -301,13 +302,15 @@ export default function Home() {
         const candidates: TaskItem[] = actions.map((action: CrmRecord, index: number) => {
           const account = action.account && typeof action.account === "object" ? action.account as CrmRecord : {};
           const opportunity = action.opportunity && typeof action.opportunity === "object" ? action.opportunity as CrmRecord : {};
+          const lead = action.lead && typeof action.lead === "object" ? action.lead as CrmRecord : {};
           const evidence = action.evidence && typeof action.evidence === "object" ? action.evidence as CrmRecord : {};
           const period = evidence.period && typeof evidence.period === "object" ? evidence.period as CrmRecord : {};
           const priority = String(action.priority || "P2");
           const ruleId = String(action.ruleId || "企培任务规则");
           const opportunityId = String(opportunity.opportunityId || evidence.opportunityId || "");
+          const leadId = String(lead.leadId || evidence.leadId || "");
           const accountId = String(account.accountId || evidence.accountId || opportunity.accountId || "");
-          const candidateKey = String(action.candidateKey || `${ruleId}:${opportunityId || accountId || index}`);
+          const candidateKey = String(action.candidateKey || `${ruleId}:${leadId || opportunityId || accountId || index}`);
           const source = ruleId.startsWith("usage_zero_") && period.from && period.to
             ? `数仓使用规则 · ${String(period.from)}—${String(period.to)}`
             : ruleId;
@@ -316,7 +319,7 @@ export default function Home() {
             kind: "candidate",
             time: priority === "P0" ? "本周优先" : "本周",
             urgency: priority === "P0" ? "overdue" : priority === "P1" ? "today" : "later",
-            customer: String(account.accountName || opportunity.opportunityName || action.customerName || "经营任务"),
+            customer: String(account.accountName || lead.companyName || opportunity.opportunityName || action.customerName || "经营任务"),
             title: String(action.title || "待处理任务"),
             fact: String(action.suggestedAction || "取得下一项客户事实"),
             reason: String(action.reason || "企培任务规则触发"),
@@ -325,8 +328,8 @@ export default function Home() {
             candidateKey,
             owner: "我",
             action: "生成任务",
-            associationId: opportunityId || accountId || undefined,
-            associationType: opportunityId ? "opportunity" : "account",
+            associationId: leadId || opportunityId || accountId || undefined,
+            associationType: leadId ? "lead" : opportunityId ? "opportunity" : "account",
           };
         });
         if (active) {
@@ -407,13 +410,13 @@ export default function Home() {
     setTaskMessage(null);
     try {
       if (task.kind === "candidate") {
-        if (!task.associationId) throw new Error("该规则建议缺少明确客户，暂不能直接生成任务；请先进入客户或商机确认对象。");
+        if (!task.associationId) throw new Error("该规则建议缺少明确潜客、客户或商机，暂不能直接生成任务。");
         const dueDate = new Date(taskClock + 86400000).toISOString().slice(0, 10);
         const response = await fetch("/api/crm/actions", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "create-task", payload: {
             taskName: task.title, planFinishDate: dueDate,
-            ...(task.associationType === "opportunity" ? { opportunityId: task.associationId } : { accountId: task.associationId }),
+            ...(task.associationType === "lead" ? { leadId: task.associationId } : task.associationType === "opportunity" ? { opportunityId: task.associationId } : { accountId: task.associationId }),
             description: task.fact, taskRemark: `规则来源：${task.ruleId || task.source}；候选编号：${task.candidateKey || task.id}；触发原因：${task.reason}`,
           } }),
         });
