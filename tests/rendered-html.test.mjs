@@ -62,6 +62,8 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(page, /候选编号：/);
   assert.match(page, /candidateKey/);
   assert.match(page, /数仓使用规则/);
+  assert.match(page, /opportunity\.opportunityId/);
+  assert.match(page, /associationType: opportunityId \? "opportunity" : "account"/);
   assert.match(page, /失败后可直接重试，不会重复创建已完成步骤/);
   assert.match(page, /选择具体商机并勾选确认时，才会同步阶段/);
 });

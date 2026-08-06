@@ -288,22 +288,26 @@ export default function Home() {
         const actions = (Array.isArray(data.candidates?.actions) ? data.candidates.actions : [])
           .filter((action: CrmRecord) => {
             const account = action.account && typeof action.account === "object" ? action.account as CrmRecord : {};
+            const opportunity = action.opportunity && typeof action.opportunity === "object" ? action.opportunity as CrmRecord : {};
             const evidence = action.evidence && typeof action.evidence === "object" ? action.evidence as CrmRecord : {};
             const candidateKey = String(action.candidateKey || "");
             const ruleId = String(action.ruleId || "");
-            const accountId = String(account.accountId || evidence.accountId || "");
-            return !openRuleTasks.some(({ remark, associationId }: { remark: string; associationId: string }) =>
+            const candidateAssociationId = String(opportunity.opportunityId || evidence.opportunityId || account.accountId || evidence.accountId || "");
+            return !openRuleTasks.some(({ remark, associationId: openAssociationId }: { remark: string; associationId: string }) =>
               (candidateKey && remark.includes(`候选编号：${candidateKey}`)) ||
-              (!remark.includes("候选编号：") && accountId && associationId === accountId && remark.includes(`规则来源：${ruleId}`))
+              (!remark.includes("候选编号：") && candidateAssociationId && openAssociationId === candidateAssociationId && remark.includes(`规则来源：${ruleId}`))
             );
           });
         const candidates: TaskItem[] = actions.map((action: CrmRecord, index: number) => {
           const account = action.account && typeof action.account === "object" ? action.account as CrmRecord : {};
+          const opportunity = action.opportunity && typeof action.opportunity === "object" ? action.opportunity as CrmRecord : {};
           const evidence = action.evidence && typeof action.evidence === "object" ? action.evidence as CrmRecord : {};
           const period = evidence.period && typeof evidence.period === "object" ? evidence.period as CrmRecord : {};
           const priority = String(action.priority || "P2");
           const ruleId = String(action.ruleId || "企培任务规则");
-          const candidateKey = String(action.candidateKey || `${ruleId}:${String(account.accountId || evidence.accountId || index)}`);
+          const opportunityId = String(opportunity.opportunityId || evidence.opportunityId || "");
+          const accountId = String(account.accountId || evidence.accountId || opportunity.accountId || "");
+          const candidateKey = String(action.candidateKey || `${ruleId}:${opportunityId || accountId || index}`);
           const source = ruleId.startsWith("usage_zero_") && period.from && period.to
             ? `数仓使用规则 · ${String(period.from)}—${String(period.to)}`
             : ruleId;
@@ -312,7 +316,7 @@ export default function Home() {
             kind: "candidate",
             time: priority === "P0" ? "本周优先" : "本周",
             urgency: priority === "P0" ? "overdue" : priority === "P1" ? "today" : "later",
-            customer: String(account.accountName || action.customerName || "经营任务"),
+            customer: String(account.accountName || opportunity.opportunityName || action.customerName || "经营任务"),
             title: String(action.title || "待处理任务"),
             fact: String(action.suggestedAction || "取得下一项客户事实"),
             reason: String(action.reason || "企培任务规则触发"),
@@ -321,8 +325,8 @@ export default function Home() {
             candidateKey,
             owner: "我",
             action: "生成任务",
-            associationId: String(account.accountId || evidence.accountId || "") || undefined,
-            associationType: "account",
+            associationId: opportunityId || accountId || undefined,
+            associationType: opportunityId ? "opportunity" : "account",
           };
         });
         if (active) {
