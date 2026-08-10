@@ -41,10 +41,17 @@ function endOfQuarter(date: Date): Date {
 }
 
 async function upstreamJson(path: string, token: string): Promise<JsonObject> {
-  const response = await crmMcpFetch(path, {}, token);
-  const data = objectValue(await response.json().catch(() => ({})));
-  if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : `${path} 查询失败`);
-  return data;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await crmMcpFetch(path, {}, token);
+    const data = objectValue(await response.json().catch(() => ({})));
+    if (response.ok) return data;
+
+    const message = typeof data.error === "string" ? data.error : `${path} 查询失败`;
+    const rateLimited = response.status === 429 || /status code 429|too many requests|请求过于频繁/i.test(message);
+    if (!rateLimited || attempt === 2) throw new Error(message);
+    await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+  }
+  throw new Error(`${path} 查询失败`);
 }
 
 async function upstreamPost(path: string, body: JsonObject, token: string): Promise<JsonObject> {
@@ -128,12 +135,13 @@ export async function GET(request: NextRequest) {
     }
 
     if (view === "pipeline") {
-      const [opportunities, customers, stageDictionary, leads] = await Promise.all([
-        upstreamJson(`/api/opportunities?${scopeQuery}&limit=100`, token),
-        upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token),
-        upstreamJson("/api/metadata/opportunity-stages", token),
-        upstreamJson(`/api/leads?${scopeQuery}&limit=100`, token).catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" })),
-      ]);
+      // SalesEasy applies a comparatively strict burst limit. Keep the core pipeline reads
+      // sequential so one page open does not fan out several CRM queries at the same instant.
+      const opportunities = await upstreamJson(`/api/opportunities?${scopeQuery}&limit=100`, token);
+      const customers = await upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token);
+      const stageDictionary = await upstreamJson("/api/metadata/opportunity-stages", token);
+      const leads = await upstreamJson(`/api/leads?${scopeQuery}&limit=100`, token)
+        .catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" }));
       const scopedCustomers = await withReferencedCustomers(token, customers, opportunities);
       const opportunityRecords = Array.isArray(opportunities.records) ? opportunities.records as Array<Record<string, unknown>> : [];
       const opportunityIds = opportunityRecords.map(record => String(record.id || "")).filter(Boolean);
