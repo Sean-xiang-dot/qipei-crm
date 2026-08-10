@@ -88,3 +88,14 @@ test("derives page scope from CRM user role facts instead of user allowlists", a
   assert.match(dataRoute, /resolveCrmAccess/);
   assert.doesNotMatch(`${access}\n${dataRoute}\n${envExample}\n${readme}`, /CRM_MANAGER_USER_IDS|CRM_DIRECTOR_USER_IDS/);
 });
+
+test("turns HTML and expired-session API responses into actionable CRM messages", async () => {
+  const page = await source("app/page.tsx");
+
+  assert.match(page, /async function readCrmApi/);
+  assert.match(page, /contentType\.includes\("text\/html"\)/);
+  assert.match(page, /CRM 数据服务暂时不可用，请稍后重新读取/);
+  assert.match(page, /CRM 登录已失效，请重新登录/);
+  assert.match(page, /error instanceof CrmApiError && error\.status === 401/);
+  assert.doesNotMatch(page, /(?:response|poll|updateResponse|taskResponse)\.json\(\)/);
+});

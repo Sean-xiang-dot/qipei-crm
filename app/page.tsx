@@ -163,6 +163,43 @@ type NewLeadDraft = {
   customerDemand: string;
 };
 
+class CrmApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "CrmApiError";
+  }
+}
+
+async function readCrmApi(response: Response, fallbackMessage: string): Promise<Awaited<ReturnType<Response["json"]>>> {
+  const body = await response.text();
+  let data: unknown;
+
+  try {
+    data = body ? JSON.parse(body) : {};
+  } catch {
+    const contentType = response.headers.get("content-type") || "";
+    const looksLikeHtml = contentType.includes("text/html") || /^\s*</.test(body);
+    const message = response.status === 401 || response.redirected
+      ? "CRM 登录已失效，请重新登录"
+      : looksLikeHtml
+        ? "CRM 数据服务暂时不可用，请稍后重新读取"
+        : `${fallbackMessage}（服务返回格式异常）`;
+    throw new CrmApiError(message, response.status);
+  }
+
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new CrmApiError(`${fallbackMessage}（服务返回格式异常）`, response.status);
+  }
+
+  if (!response.ok) {
+    const error = "error" in data && typeof data.error === "string" ? data.error : "";
+    const message = response.status === 401 ? "CRM 登录已失效，请重新登录" : error || fallbackMessage;
+    throw new CrmApiError(message, response.status);
+  }
+
+  return data as Awaited<ReturnType<Response["json"]>>;
+}
+
 const funnelStages: { id: FunnelStage; label: string; hint: string; tone: string }[] = [
   { id: "lead", label: "潜客", hint: "确认身份与真实需求", tone: "lead" },
   { id: "interest", label: "兴趣", hint: "确认产品或采购场景", tone: "interest" },
@@ -387,9 +424,9 @@ export default function Home() {
 
   useEffect(() => {
     fetch("/api/crm-auth/status", { cache: "no-store" })
-      .then((response) => response.json())
+      .then((response) => readCrmApi(response, "CRM 登录状态读取失败"))
       .then((data) => setAuth(data.authenticated ? { state: "authenticated", ...data.session } : { state: "anonymous" }))
-      .catch(() => setAuth({ state: "error", message: "暂时无法连接企培 CRM MCP" }));
+      .catch((error) => setAuth({ state: "error", message: error instanceof Error ? error.message : "暂时无法连接企培 CRM MCP" }));
   }, []);
 
   useEffect(() => {
@@ -397,8 +434,7 @@ export default function Home() {
     let active = true;
     fetch("/api/crm/data?view=tasks", { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "任务中心查询失败");
+        const data = await readCrmApi(response, "任务中心查询失败");
         const statusDictionary = Array.isArray(data.realTasks?.statusDictionary) ? data.realTasks.statusDictionary : [];
         const statusLabels = new Map<string, string>(statusDictionary.map((item: CrmRecord) => [String(item.value), String(item.label || item.value)]));
         const realRecords = Array.isArray(data.realTasks?.records) ? data.realTasks.records : [];
@@ -477,6 +513,10 @@ export default function Home() {
       })
       .catch((error) => {
         if (!active) return;
+        if (error instanceof CrmApiError && error.status === 401) {
+          setAuth({ state: "anonymous" });
+          return;
+        }
         setTasks([]);
         setTaskError(error instanceof Error ? error.message : "任务中心查询失败");
         setTaskDataState("error");
@@ -489,8 +529,7 @@ export default function Home() {
     let active = true;
     fetch("/api/crm/data?view=pipeline", { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(String(data.error || "客户查询失败"));
+        const data = await readCrmApi(response, "客户查询失败");
         const options = (Array.isArray(data.customers?.records) ? data.customers.records : []).map((record: CrmRecord) => ({ id: String(record.id), name: String(record.accountName || "未命名客户") }));
         const opportunities = (Array.isArray(data.opportunities?.records) ? data.opportunities.records : []).map((record: CrmRecord) => ({
           id: String(record.id), name: String(record.opportunityName || "未命名商机"), accountId: String(record.accountId || ""),
@@ -519,15 +558,13 @@ export default function Home() {
     setAuth({ state: "authorizing" });
     try {
       const response = await fetch("/api/crm-auth/start", { method: "POST" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "无法启动 CRM 登录");
+      const data = await readCrmApi(response, "无法启动 CRM 登录");
       const loginWindow = window.open(data.authorizeUrl, "crm-oauth", "popup=yes,width=760,height=760");
       if (!loginWindow) window.location.href = data.authorizeUrl;
       for (let attempt = 0; attempt < 150; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 1600));
         const poll = await fetch(`/api/crm-auth/poll?loginId=${encodeURIComponent(data.loginId)}`, { cache: "no-store" });
-        const result = await poll.json();
-        if (!poll.ok) throw new Error(result.error || "CRM 登录失败");
+        const result = await readCrmApi(poll, "CRM 登录失败");
         if (result.status === "authenticated") {
           loginWindow?.close();
           setAuth({ state: "authenticated", userId: result.userId, userName: result.userName });
@@ -563,8 +600,7 @@ export default function Home() {
             description: task.fact, taskRemark: `规则来源：${task.ruleId || task.source}；候选编号：${task.candidateKey || task.id}；触发原因：${task.reason}`,
           } }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "规则建议生成任务失败");
+        const data = await readCrmApi(response, "规则建议生成任务失败");
         const result = data.result?.data || data.result?.result || data.result || {};
         setTasks((items) => items.map((item) => item.id === id ? {
           ...item, id: String(result.id || `created-${id}`), kind: "real", source: "销售易任务 · 进行中",
@@ -576,8 +612,7 @@ export default function Home() {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "update-task", payload: { taskId: task.id, operation: "complete", taskRemark: "已在企培 CRM 任务中心确认完成" } }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "任务完成失败");
+        await readCrmApi(response, "任务完成失败");
         setTasks((items) => items.map((item) => item.id === id ? { ...item, completed: true, statusLabel: "已完成", source: "销售易任务 · 已完成", action: "已完成" } : item));
         setTaskMessage("任务已在销售易中标记完成。");
       }
@@ -600,8 +635,7 @@ export default function Home() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "update-task", payload: { taskId: task.id, operation: "reschedule", planFinishDate: nextDue, taskRemark: "在企培 CRM 任务中心延期一天" } }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "任务延期失败");
+      await readCrmApi(response, "任务延期失败");
       setTasks((items) => items.map((item) => item.id === id ? { ...item, dueAt: nextDue, time: shortDate(nextDue), urgency: "later" } : item));
       setTaskMessage(`任务已延期到 ${shortDate(nextDue)}。`);
     } catch (error) {
@@ -636,8 +670,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ note, context: { accountId: selectedCustomerId, accountName: customer?.name, opportunityId: opportunity?.id, opportunityName: opportunity?.name } }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "智能分析失败");
+      const data = await readCrmApi(response, "智能分析失败");
       setAnalysis(data);
       setComposeStep("review");
     } catch (error) {
@@ -680,8 +713,7 @@ export default function Home() {
           } } : {}),
         } }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "客户进展写入失败；可直接重试，已完成步骤不会重复创建");
+      await readCrmApi(response, "客户进展写入失败；可直接重试，已完成步骤不会重复创建");
       setComposeMessage(applySuggestedStage && selectedOpportunity && suggestedStageId
         ? "客户活动、商机任务和确认后的阶段已写入销售易。"
         : `客户活动和下一任务已写入销售易${selectedOpportunity ? "，任务已关联到具体商机" : ""}。`);
@@ -848,8 +880,7 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
     let active = true;
     fetch(`/api/crm/data?view=customers&scope=${scope}`, { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json() as CrmRecord;
-        if (!response.ok) throw new Error(String(data.error || "客户查询失败"));
+        const data = await readCrmApi(response, "客户查询失败") as CrmRecord;
         const mapped = customerItemsFromPayload(data);
         if (active) {
           setItems(mapped);
@@ -885,8 +916,7 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
     setCustomerPageError(null);
     try {
       const response = await fetch(`/api/crm/data?view=customers&scope=${scope}&cursor=${encodeURIComponent(customerCursor)}`, { cache: "no-store" });
-      const data = await response.json() as CrmRecord;
-      if (!response.ok) throw new Error(String(data.error || "下一页客户查询失败"));
+      const data = await readCrmApi(response, "下一页客户查询失败") as CrmRecord;
       setItems(current => mergeById(current, customerItemsFromPayload(data)));
       setCustomerCursor(nextPageCursor(data.customers));
     } catch (error) {
@@ -931,8 +961,7 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
           },
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "生命周期更新失败");
+      const data = await readCrmApi(response, "生命周期更新失败");
       const lifecycle = data.lifecycle || {};
       setItems((all) => all.map((item) => item.id !== current.id ? item : {
         ...item,
@@ -1011,8 +1040,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     let active = true;
     fetch(`/api/crm/data?view=pipeline&scope=${scope}`, { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json() as CrmRecord;
-        if (!response.ok) throw new Error(String(data.error || "潜客与商机查询失败"));
+        const data = await readCrmApi(response, "潜客与商机查询失败") as CrmRecord;
         const page = pipelinePageFromPayload(data);
         if (active) {
           setCards(page.cards);
@@ -1040,8 +1068,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     setPipelinePageError(null);
     try {
       const response = await fetch(`/api/crm/data?view=pipeline&scope=${scope}&cursor=${encodeURIComponent(pipelineCursor)}`, { cache: "no-store" });
-      const data = await response.json() as CrmRecord;
-      if (!response.ok) throw new Error(String(data.error || "下一页潜客与商机查询失败"));
+      const data = await readCrmApi(response, "下一页潜客与商机查询失败") as CrmRecord;
       const page = pipelinePageFromPayload(data);
       setCards(current => mergeById(current, page.cards));
       setStageIds(current => ({ ...current, ...page.stageIds }));
@@ -1058,8 +1085,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     let active = true;
     fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}`, { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json() as CrmRecord;
-        if (!response.ok) throw new Error(String(data.error || "商机预测查询失败"));
+        const data = await readCrmApi(response, "商机预测查询失败") as CrmRecord;
         const mapped = forecastItemsFromPayload(data);
         if (active) {
           setForecastItems(mapped);
@@ -1084,8 +1110,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     setForecastPageError(null);
     try {
       const response = await fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}&cursor=${encodeURIComponent(forecastCursor)}`, { cache: "no-store" });
-      const data = await response.json() as CrmRecord;
-      if (!response.ok) throw new Error(String(data.error || "下一页预测商机查询失败"));
+      const data = await readCrmApi(response, "下一页预测商机查询失败") as CrmRecord;
       setForecastItems(current => mergeById(current, forecastItemsFromPayload(data)));
       setForecastCursor(nextPageCursor(data.opportunities));
     } catch (error) {
@@ -1150,8 +1175,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
             source: "crm-pipeline",
           } }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "商机生命周期更新失败");
+        const data = await readCrmApi(response, "商机生命周期更新失败");
         const lifecycle = data.lifecycle || {};
         setCards((items) => items.map((item) => item.id === source.id ? {
           ...item, lifecycle: toStatus, lifecycleVersion: Number(lifecycle.version || item.lifecycleVersion || 0),
@@ -1243,8 +1267,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
             idempotencyKey: moveDraft.idempotencyKey,
           } }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "潜客转化失败");
+        const data = await readCrmApi(response, "潜客转化失败");
         conversionResult = data.conversion || null;
       } catch (error) {
         setBoardNotice(error instanceof Error ? error.message : "潜客转化失败；可保留当前窗口再次提交");
@@ -1271,8 +1294,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
             fields: { saleStageId, updateFieldReason__c: moveDraft.evidence },
           } }),
         });
-        const updateData = await updateResponse.json();
-        if (!updateResponse.ok) throw new Error(updateData.error || "商机阶段更新失败");
+        await readCrmApi(updateResponse, "商机阶段更新失败");
         const taskResponse = await fetch("/api/crm/actions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1284,8 +1306,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
             taskRemark: "由商机阶段看板人工确认后生成",
           } }),
         });
-        const taskData = await taskResponse.json();
-        if (!taskResponse.ok) throw new Error(`阶段已更新，但下一任务创建失败：${taskData.error || "未知错误"}`);
+        await readCrmApi(taskResponse, "阶段已更新，但下一任务创建失败");
       } catch (error) {
         setBoardNotice(error instanceof Error ? error.message : "商机阶段写回失败");
         setWriteBusy(false);
@@ -1322,8 +1343,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "create-lead", payload: newLead }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "潜客创建失败");
+      const data = await readCrmApi(response, "潜客创建失败");
       const result = data.result?.data || data.result?.result || data.result || {};
       setCards((items) => [{
         id: String(result.id || `created-${Date.now()}`), kind: "lead", stage: "lead", lifecycle: "active",
@@ -1441,8 +1461,7 @@ function ActivityView({ onCompose }: { onCompose: () => void }) {
     let active = true;
     fetch("/api/crm/data?view=activities", { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "活动查询失败");
+        const data = await readCrmApi(response, "活动查询失败");
         if (active) {
           setRecords(Array.isArray(data.activities?.records) ? data.activities.records : []);
           setDataState("real");
@@ -1467,8 +1486,7 @@ function InsightView() {
     let active = true;
     fetch(`/api/crm/data?view=insights&period=${period}`, { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "经营洞察查询失败");
+        const data = await readCrmApi(response, "经营洞察查询失败");
         if (active) {
           setPayload(data);
           setDataState("real");
