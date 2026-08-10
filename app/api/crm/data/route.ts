@@ -4,9 +4,24 @@ import { crmMcpFetch, crmSessionToken } from "../../../lib/crm-mcp";
 export const dynamic = "force-dynamic";
 
 type JsonObject = Record<string, unknown>;
+type DataScope = "mine" | "team" | "organization";
+type CrmRole = "sales" | "manager" | "director";
 
 function objectValue(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
+}
+
+function recordsValue(value: unknown): Array<Record<string, unknown>> {
+  const object = objectValue(value);
+  if (Array.isArray(object.records)) return object.records as Array<Record<string, unknown>>;
+  const result = objectValue(object.result);
+  if (Array.isArray(result.records)) return result.records as Array<Record<string, unknown>>;
+  const data = objectValue(object.data);
+  return Array.isArray(data.records) ? data.records as Array<Record<string, unknown>> : [];
+}
+
+function queryValue(value: string): string {
+  return /^\d+$/.test(value) ? value : `'${value.replace(/'/g, "\\'")}'`;
 }
 
 function shanghaiDate(date: Date): string {
@@ -44,10 +59,51 @@ async function upstreamPost(path: string, body: JsonObject, token: string): Prom
   return data;
 }
 
+async function ownerDirectory(token: string, ...datasets: unknown[]): Promise<Record<string, string>> {
+  const ownerIds = [...new Set(datasets.flatMap(recordsValue).map((record) => String(record.ownerId || "")).filter(Boolean))].slice(0, 100);
+  if (!ownerIds.length) return {};
+  const result = await upstreamPost("/api/soql", {
+    soql: `SELECT id,name FROM user WHERE id IN (${ownerIds.map(queryValue).join(",")}) LIMIT 100`,
+  }, token).catch(() => ({ records: [] }));
+  return Object.fromEntries(recordsValue(result).map((record) => [String(record.id), String(record.name || record.id)]));
+}
+
+async function withReferencedCustomers(token: string, customers: JsonObject, opportunities: JsonObject): Promise<JsonObject> {
+  const current = recordsValue(customers);
+  const currentIds = new Set(current.map((record) => String(record.id)));
+  const missingIds = [...new Set(recordsValue(opportunities).map((record) => String(record.accountId || "")).filter((id) => id && !currentIds.has(id)))].slice(0, 100);
+  if (!missingIds.length) return customers;
+  const referenced = await upstreamJson(`/api/customers?accountIds=${encodeURIComponent(missingIds.join(","))}&limit=100`, token);
+  return { ...customers, records: [...current, ...recordsValue(referenced)], referencedReadOnlyCount: recordsValue(referenced).length };
+}
+
 function ownerIdFromWhoami(data: JsonObject): string {
   const user = objectValue(data.user);
   const context = objectValue(data.userContext);
   return String(data.userId || data.id || user.id || context.userId || "");
+}
+
+function configuredIds(name: string): Set<string> {
+  return new Set((process.env[name] || "").split(",").map((value) => value.trim()).filter(Boolean));
+}
+
+function accessFor(whoami: JsonObject, requested: string): { role: CrmRole; requested: DataScope; effective: DataScope; query: string; departmentId: string } {
+  const ownerId = ownerIdFromWhoami(whoami);
+  const context = objectValue(whoami.userContext);
+  const departmentId = String(context.dimDepart || "");
+  const directors = configuredIds("CRM_DIRECTOR_USER_IDS");
+  const managers = configuredIds("CRM_MANAGER_USER_IDS");
+  const role: CrmRole = directors.has(ownerId) ? "director" : managers.has(ownerId) ? "manager" : "sales";
+  const requestedScope: DataScope = requested === "team" || requested === "organization" ? requested : "mine";
+  const allowed = requestedScope === "mine" || (requestedScope === "team" && role !== "sales") || (requestedScope === "organization" && role === "director");
+  const effective: DataScope = allowed ? requestedScope : "mine";
+  if (effective === "team" && !departmentId) throw new Error("当前 CRM 用户缺少部门信息，暂时不能读取团队范围");
+  const query = effective === "mine"
+    ? `ownerId=${encodeURIComponent(ownerId)}`
+    : effective === "team"
+      ? `departmentId=${encodeURIComponent(departmentId)}&includeDescendants=1`
+      : "includeDescendants=1";
+  return { role, requested: requestedScope, effective, query, departmentId };
 }
 
 export async function GET(request: NextRequest) {
@@ -56,16 +112,21 @@ export async function GET(request: NextRequest) {
 
   const view = request.nextUrl.searchParams.get("view") || "customers";
   const period = request.nextUrl.searchParams.get("period") || "30d";
+  const requestedScope = request.nextUrl.searchParams.get("scope") || "mine";
 
   try {
     const whoami = await upstreamJson("/api/whoami", token);
     const ownerId = ownerIdFromWhoami(whoami);
     if (!ownerId) throw new Error("无法取得当前 CRM 用户 ID");
     const ownerQuery = `ownerId=${encodeURIComponent(ownerId)}`;
+    const access = accessFor(whoami, requestedScope);
+    const scopeQuery = access.query;
+    const accessPayload = { role: access.role, requested: access.requested, effective: access.effective, canViewTeam: access.role !== "sales", canViewOrganization: access.role === "director" };
 
     if (view === "customers") {
-      const customers = await upstreamJson(`/api/customers?${ownerQuery}&limit=100`, token);
-      return NextResponse.json({ source: "enterprise-training-mcp", asOf: new Date().toISOString(), user: whoami, userName: String(whoami.user || "当前用户"), customers });
+      const customers = await upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token);
+      const owners = await ownerDirectory(token, customers);
+      return NextResponse.json({ source: "enterprise-training-mcp", asOf: new Date().toISOString(), user: whoami, userName: String(whoami.user || "当前用户"), access: accessPayload, owners, customers });
     }
 
     if (view === "tasks") {
@@ -84,13 +145,12 @@ export async function GET(request: NextRequest) {
 
     if (view === "pipeline") {
       const [opportunities, customers, stageDictionary, leads] = await Promise.all([
-        upstreamJson(`/api/opportunities?${ownerQuery}&limit=100`, token),
-        upstreamJson(`/api/customers?${ownerQuery}&limit=100`, token),
+        upstreamJson(`/api/opportunities?${scopeQuery}&limit=100`, token),
+        upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token),
         upstreamJson("/api/metadata/opportunity-stages", token),
-        upstreamPost("/api/soql", {
-          soql: `SELECT id,name,companyName,mobile,ownerId,createdAt,updatedAt FROM lead WHERE ownerId = ${ownerId} ORDER BY updatedAt DESC LIMIT 100`,
-        }, token).catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" })),
+        upstreamJson(`/api/leads?${scopeQuery}&limit=100`, token).catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" })),
       ]);
+      const scopedCustomers = await withReferencedCustomers(token, customers, opportunities);
       const opportunityRecords = Array.isArray(opportunities.records) ? opportunities.records as Array<Record<string, unknown>> : [];
       const opportunityIds = opportunityRecords.map(record => String(record.id || "")).filter(Boolean);
       const opportunityLifecycle = opportunityIds.length
@@ -100,8 +160,10 @@ export async function GET(request: NextRequest) {
         source: "enterprise-training-mcp",
         asOf: new Date().toISOString(),
         user: whoami,
+        access: accessPayload,
+        owners: await ownerDirectory(token, opportunities, scopedCustomers, leads),
         opportunities,
-        customers,
+        customers: scopedCustomers,
         stageDictionary,
         leads,
         opportunityLifecycle,
@@ -122,10 +184,11 @@ export async function GET(request: NextRequest) {
       const toDate = period === "quarter" ? endOfQuarter(now) : new Date(now.getTime() + 30 * 86400000);
       const to = shanghaiDate(toDate);
       const [opportunities, customers] = await Promise.all([
-        upstreamJson(`/api/opportunities?${ownerQuery}&from=${from}&to=${to}&dateField=closeDate&limit=100`, token),
-        upstreamJson(`/api/customers?${ownerQuery}&limit=100`, token),
+        upstreamJson(`/api/opportunities?${scopeQuery}&from=${from}&to=${to}&dateField=closeDate&limit=100`, token),
+        upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token),
       ]);
-      return NextResponse.json({ source: "enterprise-training-mcp", asOf: new Date().toISOString(), period: { from, to }, opportunities, customers });
+      const scopedCustomers = await withReferencedCustomers(token, customers, opportunities);
+      return NextResponse.json({ source: "enterprise-training-mcp", asOf: new Date().toISOString(), period: { from, to }, user: whoami, access: accessPayload, owners: await ownerDirectory(token, opportunities, scopedCustomers), opportunities, customers: scopedCustomers });
     }
 
     if (view === "insights") {
