@@ -240,7 +240,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (auth.state !== "authenticated") return;
+    if (auth.state !== "authenticated" || !["workbench", "tasks"].includes(view)) return;
     let active = true;
     fetch("/api/crm/data?view=tasks", { cache: "no-store" })
       .then(async (response) => {
@@ -329,10 +329,10 @@ export default function Home() {
         setTaskDataState("error");
       });
     return () => { active = false; };
-  }, [auth.state, taskClock, taskRefresh]);
+  }, [auth.state, taskClock, taskRefresh, view]);
 
   useEffect(() => {
-    if (auth.state !== "authenticated") return;
+    if (auth.state !== "authenticated" || !composerOpen) return;
     let active = true;
     fetch("/api/crm/data?view=pipeline", { cache: "no-store" })
       .then(async (response) => {
@@ -360,7 +360,7 @@ export default function Home() {
       })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [auth.state]);
+  }, [auth.state, composerOpen]);
 
   async function startCrmLogin() {
     setAuth({ state: "authorizing" });
