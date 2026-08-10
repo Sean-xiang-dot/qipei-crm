@@ -68,3 +68,18 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(page, /失败后可直接重试，不会重复创建已完成步骤/);
   assert.match(page, /选择具体商机并勾选确认时，才会同步阶段/);
 });
+
+test("derives page scope from CRM user role facts instead of user allowlists", async () => {
+  const [access, dataRoute, envExample, readme] = await Promise.all([
+    source("app/lib/crm-access.ts"),
+    source("app/api/crm/data/route.ts"),
+    source(".env.example"),
+    source("README.md"),
+  ]);
+
+  assert.match(access, /identity\.accessFacts/);
+  assert.match(access, /事业部负责人/);
+  assert.match(access, /销售主管/);
+  assert.match(dataRoute, /resolveCrmAccess/);
+  assert.doesNotMatch(`${access}\n${dataRoute}\n${envExample}\n${readme}`, /CRM_MANAGER_USER_IDS|CRM_DIRECTOR_USER_IDS/);
+});

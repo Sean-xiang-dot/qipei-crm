@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { crmMcpFetch, crmSessionToken } from "../../../lib/crm-mcp";
+import { resolveCrmAccess } from "../../../lib/crm-access";
 
 export const dynamic = "force-dynamic";
 
 type JsonObject = Record<string, unknown>;
-type DataScope = "mine" | "team" | "organization";
-type CrmRole = "sales" | "manager" | "director";
 
 function objectValue(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
@@ -83,29 +82,6 @@ function ownerIdFromWhoami(data: JsonObject): string {
   return String(data.userId || data.id || user.id || context.userId || "");
 }
 
-function configuredIds(name: string): Set<string> {
-  return new Set((process.env[name] || "").split(",").map((value) => value.trim()).filter(Boolean));
-}
-
-function accessFor(whoami: JsonObject, requested: string): { role: CrmRole; requested: DataScope; effective: DataScope; query: string; departmentId: string } {
-  const ownerId = ownerIdFromWhoami(whoami);
-  const context = objectValue(whoami.userContext);
-  const departmentId = String(context.dimDepart || "");
-  const directors = configuredIds("CRM_DIRECTOR_USER_IDS");
-  const managers = configuredIds("CRM_MANAGER_USER_IDS");
-  const role: CrmRole = directors.has(ownerId) ? "director" : managers.has(ownerId) ? "manager" : "sales";
-  const requestedScope: DataScope = requested === "team" || requested === "organization" ? requested : "mine";
-  const allowed = requestedScope === "mine" || (requestedScope === "team" && role !== "sales") || (requestedScope === "organization" && role === "director");
-  const effective: DataScope = allowed ? requestedScope : "mine";
-  if (effective === "team" && !departmentId) throw new Error("当前 CRM 用户缺少部门信息，暂时不能读取团队范围");
-  const query = effective === "mine"
-    ? `ownerId=${encodeURIComponent(ownerId)}`
-    : effective === "team"
-      ? `departmentId=${encodeURIComponent(departmentId)}&includeDescendants=1`
-      : "includeDescendants=1";
-  return { role, requested: requestedScope, effective, query, departmentId };
-}
-
 export async function GET(request: NextRequest) {
   const token = await crmSessionToken();
   if (!token) return NextResponse.json({ error: "未登录 CRM" }, { status: 401 });
@@ -119,9 +95,16 @@ export async function GET(request: NextRequest) {
     const ownerId = ownerIdFromWhoami(whoami);
     if (!ownerId) throw new Error("无法取得当前 CRM 用户 ID");
     const ownerQuery = `ownerId=${encodeURIComponent(ownerId)}`;
-    const access = accessFor(whoami, requestedScope);
+    const access = resolveCrmAccess(whoami, requestedScope);
     const scopeQuery = access.query;
-    const accessPayload = { role: access.role, requested: access.requested, effective: access.effective, canViewTeam: access.role !== "sales", canViewOrganization: access.role === "director" };
+    const accessPayload = {
+      role: access.role,
+      requested: access.requested,
+      effective: access.effective,
+      canViewTeam: access.role !== "sales",
+      canViewOrganization: access.role === "director",
+      evidence: access.evidence,
+    };
 
     if (view === "customers") {
       const customers = await upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token);
