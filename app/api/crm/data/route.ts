@@ -137,9 +137,9 @@ export async function GET(request: NextRequest) {
     if (view === "pipeline") {
       // SalesEasy applies a comparatively strict burst limit. Keep the core pipeline reads
       // sequential so one page open does not fan out several CRM queries at the same instant.
-      const opportunities = await upstreamJson(`/api/opportunities?${scopeQuery}&limit=100`, token);
+      const opportunities = await upstreamJson(`/api/opportunities?${scopeQuery}&limit=100&includeStageDictionary=1`, token);
       const customers = await upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token);
-      const stageDictionary = await upstreamJson("/api/metadata/opportunity-stages", token);
+      const stageDictionary = objectValue(opportunities.stageDictionary);
       const leads = await upstreamJson(`/api/leads?${scopeQuery}&limit=100`, token)
         .catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" }));
       const scopedCustomers = await withReferencedCustomers(token, customers, opportunities);
