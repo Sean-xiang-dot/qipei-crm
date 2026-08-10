@@ -135,13 +135,13 @@ export async function GET(request: NextRequest) {
     }
 
     if (view === "pipeline") {
-      // SalesEasy applies a comparatively strict burst limit. Keep the core pipeline reads
-      // sequential so one page open does not fan out several CRM queries at the same instant.
-      const opportunities = await upstreamJson(`/api/opportunities?${scopeQuery}&limit=100&includeStageDictionary=1`, token);
-      const customers = await upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token);
-      const stageDictionary = objectValue(opportunities.stageDictionary);
-      const leads = await upstreamJson(`/api/leads?${scopeQuery}&limit=100`, token)
-        .catch((error) => ({ records: [], warning: error instanceof Error ? error.message : "潜客查询失败" }));
+      // Keep the cross-service hop atomic. The MCP performs the scoped CRM reads and returns
+      // one coherent pipeline snapshot instead of making the web app burst several requests.
+      const pipeline = await upstreamJson(`/api/pipeline?${scopeQuery}&limit=100`, token);
+      const opportunities = objectValue(pipeline.opportunities);
+      const customers = objectValue(pipeline.customers);
+      const stageDictionary = objectValue(pipeline.stageDictionary);
+      const leads = objectValue(pipeline.leads);
       const scopedCustomers = await withReferencedCustomers(token, customers, opportunities);
       const opportunityRecords = Array.isArray(opportunities.records) ? opportunities.records as Array<Record<string, unknown>> : [];
       const opportunityIds = opportunityRecords.map(record => String(record.id || "")).filter(Boolean);
