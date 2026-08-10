@@ -74,7 +74,14 @@ type ForecastItem = {
 type CrmRecord = Record<string, unknown>;
 type DataState = "loading" | "real" | "error";
 type DataScope = "mine" | "team" | "organization";
-type AccessInfo = { role: "sales" | "manager" | "director"; effective: DataScope; canViewTeam: boolean; canViewOrganization: boolean };
+type AccessInfo = {
+  role: "sales" | "manager" | "director";
+  effective: DataScope;
+  canViewTeam: boolean;
+  canViewOrganization: boolean;
+  evidence?: string[];
+  identityWarning?: string;
+};
 
 type InsightPayload = {
   customers?: { records?: CrmRecord[] };
@@ -631,11 +638,19 @@ function DataFailure({ message, onRetry }: { message: string; onRetry: () => voi
 }
 
 function ScopeSelector({ scope, access, onChange }: { scope: DataScope; access: AccessInfo | null; onChange: (scope: DataScope) => void }) {
-  if (!access?.canViewTeam) return <span className="scope-caption">数据范围：我的</span>;
-  return <div className="scope-selector" aria-label="数据范围">
-    <button className={scope === "mine" ? "active" : ""} onClick={() => onChange("mine")}>我的</button>
-    <button className={scope === "team" ? "active" : ""} onClick={() => onChange("team")}>我的团队</button>
-    {access.canViewOrganization && <button className={scope === "organization" ? "active" : ""} onClick={() => onChange("organization")}>企培全量</button>}
+  const roleLabel = access ? { sales: "销售", manager: "主管", director: "事业部负责人" }[access.role] : "读取中";
+  const evidence = access?.evidence?.length ? `；CRM 依据：${access.evidence.join(" / ")}` : "";
+  const warning = access?.identityWarning ? `；${access.identityWarning}` : "";
+
+  return <div className="scope-identity">
+    <span className={`identity-pill${access?.identityWarning ? " warning" : ""}`} title={`${roleLabel}${evidence}${warning}`}>CRM 身份：{roleLabel}{access?.identityWarning ? "（已降级）" : ""}</span>
+    {!access?.canViewTeam
+      ? <span className="scope-caption">数据范围：我的</span>
+      : <div className="scope-selector" aria-label="数据范围">
+        <button className={scope === "mine" ? "active" : ""} onClick={() => onChange("mine")}>我的</button>
+        <button className={scope === "team" ? "active" : ""} onClick={() => onChange("team")}>我的团队</button>
+        {access.canViewOrganization && <button className={scope === "organization" ? "active" : ""} onClick={() => onChange("organization")}>企培全量</button>}
+      </div>}
   </div>;
 }
 

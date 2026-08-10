@@ -104,6 +104,7 @@ export async function GET(request: NextRequest) {
       canViewTeam: access.role !== "sales",
       canViewOrganization: access.role === "director",
       evidence: access.evidence,
+      identityWarning: typeof whoami.identityWarning === "string" ? whoami.identityWarning : "",
     };
 
     if (view === "customers") {
