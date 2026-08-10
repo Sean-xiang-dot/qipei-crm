@@ -67,6 +67,11 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(page, /\{ leadId: task\.associationId \}/);
   assert.match(page, /失败后可直接重试，不会重复创建已完成步骤/);
   assert.match(page, /选择具体商机并勾选确认时，才会同步阶段/);
+  assert.match(dataRoute, /cursorQuery/);
+  assert.match(dataRoute, /limit=50/);
+  assert.match(page, /加载更多客户/);
+  assert.match(page, /加载更多潜客与商机/);
+  assert.match(page, /加载更多预测商机/);
 });
 
 test("derives page scope from CRM user role facts instead of user allowlists", async () => {

@@ -96,6 +96,8 @@ export async function GET(request: NextRequest) {
   const view = request.nextUrl.searchParams.get("view") || "customers";
   const period = request.nextUrl.searchParams.get("period") || "30d";
   const requestedScope = request.nextUrl.searchParams.get("scope") || "mine";
+  const cursor = request.nextUrl.searchParams.get("cursor") || "";
+  const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
 
   try {
     const whoami = await upstreamJson("/api/whoami", token);
@@ -115,7 +117,7 @@ export async function GET(request: NextRequest) {
     };
 
     if (view === "customers") {
-      const customers = await upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token);
+      const customers = await upstreamJson(`/api/customers?${scopeQuery}&limit=50${cursorQuery}`, token);
       const owners = await ownerDirectory(token, customers);
       return NextResponse.json({ source: "enterprise-training-mcp", asOf: new Date().toISOString(), user: whoami, userName: String(whoami.user || "当前用户"), access: accessPayload, owners, customers });
     }
@@ -137,7 +139,7 @@ export async function GET(request: NextRequest) {
     if (view === "pipeline") {
       // Keep the cross-service hop atomic. The MCP performs the scoped CRM reads and returns
       // one coherent pipeline snapshot instead of making the web app burst several requests.
-      const pipeline = await upstreamJson(`/api/pipeline?${scopeQuery}&limit=100`, token);
+      const pipeline = await upstreamJson(`/api/pipeline?${scopeQuery}&limit=50${cursorQuery}`, token);
       const opportunities = objectValue(pipeline.opportunities);
       const customers = objectValue(pipeline.customers);
       const stageDictionary = objectValue(pipeline.stageDictionary);
@@ -176,7 +178,7 @@ export async function GET(request: NextRequest) {
       const toDate = period === "quarter" ? endOfQuarter(now) : new Date(now.getTime() + 30 * 86400000);
       const to = shanghaiDate(toDate);
       const [opportunities, customers] = await Promise.all([
-        upstreamJson(`/api/opportunities?${scopeQuery}&from=${from}&to=${to}&dateField=closeDate&limit=100`, token),
+        upstreamJson(`/api/opportunities?${scopeQuery}&from=${from}&to=${to}&dateField=closeDate&limit=50${cursorQuery}`, token),
         upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token),
       ]);
       const scopedCustomers = await withReferencedCustomers(token, customers, opportunities);

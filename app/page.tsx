@@ -202,6 +202,159 @@ function shortDate(value: unknown): string {
   return date ? new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date) : "待确认";
 }
 
+function crmObject(value: unknown): CrmRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as CrmRecord : {};
+}
+
+function nextPageCursor(value: unknown): string | null {
+  const cursor = crmObject(crmObject(value).pagination).nextCursor;
+  return typeof cursor === "string" && cursor ? cursor : null;
+}
+
+function mergeById<T extends { id: string }>(current: T[], incoming: T[]): T[] {
+  const merged = new Map(current.map(item => [item.id, item]));
+  incoming.forEach(item => merged.set(item.id, item));
+  return [...merged.values()];
+}
+
+function customerItemsFromPayload(data: CrmRecord): CustomerItem[] {
+  const customerPayload = crmObject(data.customers);
+  const records = Array.isArray(customerPayload.records) ? customerPayload.records as CrmRecord[] : [];
+  const userName = String(data.userName || "当前用户");
+  const currentUserId = String(crmObject(data.user).userId || "");
+  const owners = crmObject(data.owners) as Record<string, string>;
+  return records.map((record) => {
+    const recent = record.recentActivityRecordTime || record.RecentVisitDate__c || record.updatedAt;
+    const activeDays = daysFromNow(recent);
+    const createdDays = daysFromNow(record.createdAt);
+    const storedLifecycle = String(record.lifecycleStatus || "");
+    const lifecycle: CustomerLifecycle = ["new", "active", "attention", "paused", "closed"].includes(storedLifecycle)
+      ? storedLifecycle as CustomerLifecycle
+      : createdDays <= 30 ? "new" : activeDays <= 7 ? "active" : "attention";
+    const nextTask = record.nextTask && typeof record.nextTask === "object" ? record.nextTask as { id?: string; title?: string; dueAt?: string } : null;
+    return {
+      id: String(record.id),
+      name: String(record.accountName || "未命名客户"),
+      form: String(record.AccountTypeJJ__c || record.entityType || "类型待确认"),
+      city: String(record.cityA__c || record.provinceA__c || "地区待确认"),
+      owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? userName : `销售 ${String(record.ownerId || "待确认")}`),
+      ownedByMe: String(record.ownerId || "") === currentUserId,
+      products: "从客户360加载",
+      next: String(nextTask?.title || (activeDays <= 7 ? "查看最近进展" : "补充下一动作")),
+      health: lifecycle === "new" ? "新建客户" : lifecycle === "active" ? "本周活跃" : "需要关注",
+      tone: lifecycle === "new" ? "violet" : lifecycle === "active" ? "blue" : "red",
+      lifecycle,
+      lastFact: recent ? `最近 CRM 事实：${shortDate(recent)}` : "尚未取得有效客户事实",
+      lastActiveDays: activeDays,
+      pauseReason: record.lifecycleReason ? String(record.lifecycleReason) : undefined,
+      reviewDate: record.reviewDate ? String(record.reviewDate) : undefined,
+      version: Number(record.version || 0),
+      nextTask,
+    };
+  });
+}
+
+function pipelinePageFromPayload(data: CrmRecord): { cards: PipelineCard[]; stageIds: Partial<Record<Exclude<FunnelStage, "lead">, string>> } {
+  const customerRecords = Array.isArray(crmObject(data.customers).records) ? crmObject(data.customers).records as CrmRecord[] : [];
+  const currentUserId = String(crmObject(data.user).userId || "");
+  const owners = crmObject(data.owners) as Record<string, string>;
+  const customerById = new Map(customerRecords.map(record => [String(record.id), record]));
+  const lifecycleById = crmObject(crmObject(data.opportunityLifecycle).records) as Record<string, CrmRecord>;
+  const dictionary = Array.isArray(crmObject(data.stageDictionary).stages) ? crmObject(data.stageDictionary).stages as CrmRecord[] : [];
+  const stageById = new Map(dictionary.map(stage => [String(stage.stageId), String(stage.normalizedStage || "unknown")]));
+  const stageIds: Partial<Record<Exclude<FunnelStage, "lead">, string>> = {};
+  dictionary.forEach((item) => {
+    const normalized = String(item.normalizedStage || "unknown");
+    const stage = normalized === "business" ? "commercial" : normalized;
+    if (["interest", "experience", "validation", "commercial"].includes(stage) && item.stageId) {
+      stageIds[stage as Exclude<FunnelStage, "lead">] = String(item.stageId);
+    }
+  });
+  const opportunityRecords = Array.isArray(crmObject(data.opportunities).records) ? crmObject(data.opportunities).records as CrmRecord[] : [];
+  const opportunityCards: PipelineCard[] = opportunityRecords.flatMap((record) => {
+    const normalized = stageById.get(String(record.saleStageId || ""));
+    if (!normalized || normalized === "unknown") return [];
+    const stage: FunnelStage = normalized === "business" ? "commercial" : normalized as FunnelStage;
+    const customer = customerById.get(String(record.accountId || "")) || {};
+    const lifecycle = lifecycleById[String(record.id)] || {};
+    const customerName = String(customer.accountName || `客户 ${String(record.accountId || "待关联")}`);
+    const typeText = String(customer.AccountTypeJJ__c || customer.entityType || "");
+    return [{
+      id: String(record.id),
+      accountId: String(record.accountId || ""),
+      updatedAt: record.updatedAt as string | number | undefined,
+      kind: "opportunity" as const,
+      stage,
+      lifecycle: (["active", "paused", "closed"].includes(String(lifecycle.status)) ? String(lifecycle.status) : "active") as LifecycleStatus,
+      lifecycleVersion: Number(lifecycle.version || 0),
+      title: String(record.opportunityName || "未命名商机"),
+      customer: customerName,
+      customerKind: /个人|老师|名师/.test(typeText) ? "个体老师" as const : "教育机构" as const,
+      owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? "我" : `销售 ${String(record.ownerId || "待确认")}`),
+      ownedByMe: String(record.ownerId || "") === currentUserId,
+      product: "产品信息待从商机详情补齐",
+      evidence: `CRM 真实商机 · 阶段更新时间 ${shortDate(record.updatedAt)}`,
+      stageAge: `最近更新 ${shortDate(record.updatedAt)}`,
+      amount: moneyLabel(Number(record.money || 0)),
+      nextTask: "补充可验证的下一任务",
+      due: "需处置",
+      taskSource: "CRM 商机",
+      pauseReason: lifecycle.reason ? String(lifecycle.reason) : undefined,
+      reviewDate: lifecycle.reviewDate ? String(lifecycle.reviewDate) : undefined,
+    }];
+  });
+  const leadPayload = crmObject(data.leads);
+  const rawLeadRecords = Array.isArray(crmObject(leadPayload.result).records)
+    ? crmObject(leadPayload.result).records as CrmRecord[]
+    : Array.isArray(crmObject(leadPayload.data).records)
+      ? crmObject(leadPayload.data).records as CrmRecord[]
+      : Array.isArray(leadPayload.records) ? leadPayload.records as CrmRecord[] : [];
+  const leadCards: PipelineCard[] = rawLeadRecords.map((record) => {
+    const customerName = String(record.companyName || record.name || "未命名潜客");
+    return {
+      id: String(record.id),
+      kind: "lead",
+      stage: "lead",
+      lifecycle: "active",
+      title: customerName,
+      customer: customerName,
+      contact: record.name ? String(record.name) : undefined,
+      customerKind: /老师|个人/.test(customerName) || !record.companyName ? "个体老师" : "教育机构",
+      owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? "我" : `销售 ${String(record.ownerId || "待确认")}`),
+      ownedByMe: String(record.ownerId || "") === currentUserId,
+      product: "待首次沟通确认",
+      evidence: record.mobile ? "CRM 潜客已有联系电话" : "CRM 潜客尚缺联系电话",
+      stageAge: `最近更新 ${shortDate(record.updatedAt || record.createdAt)}`,
+      nextTask: "完成首次联系并确认客户主体、联系人和使用场景",
+      due: "尽快",
+      taskSource: "CRM 潜客",
+    };
+  });
+  return { cards: [...leadCards, ...opportunityCards], stageIds };
+}
+
+function forecastItemsFromPayload(data: CrmRecord): ForecastItem[] {
+  const customerRecords = Array.isArray(crmObject(data.customers).records) ? crmObject(data.customers).records as CrmRecord[] : [];
+  const accountNames = new Map(customerRecords.map(record => [String(record.id), String(record.accountName || "未命名客户")]));
+  const currentUserId = String(crmObject(data.user).userId || "");
+  const owners = crmObject(data.owners) as Record<string, string>;
+  const opportunityRecords = Array.isArray(crmObject(data.opportunities).records) ? crmObject(data.opportunities).records as CrmRecord[] : [];
+  return opportunityRecords.map(record => ({
+    id: String(record.id),
+    name: String(record.opportunityName || "未命名商机"),
+    customer: accountNames.get(String(record.accountId)) || `客户 ${String(record.accountId || "待关联")}`,
+    stage: record.saleStageId ? `CRM 阶段 ${String(record.saleStageId)}` : "阶段待确认",
+    amount: Number(record.money || 0),
+    forecastAmount: Number(record.fcastMoney || record.money || 0),
+    evidence: `CRM 预计关闭：${shortDate(record.closeDate)}`,
+    next: `预计 ${shortDate(record.closeDate)}`,
+    risk: Number(record.fcastMoney || 0) > 0 ? "已有预测金额" : "待补预测依据",
+    closeDate: String(record.closeDate || ""),
+    owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? "我" : `销售 ${String(record.ownerId || "待确认")}`),
+    ownedByMe: String(record.ownerId || "") === currentUserId,
+  }));
+}
+
 export default function Home() {
   const [auth, setAuth] = useState<{ state: "loading" | "anonymous" | "authorizing" | "authenticated" | "error"; userId?: string; userName?: string; message?: string }>({ state: "loading" });
   const [view, setView] = useState<View>("workbench");
@@ -337,7 +490,7 @@ export default function Home() {
     fetch("/api/crm/data?view=pipeline", { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "客户查询失败");
+        if (!response.ok) throw new Error(String(data.error || "客户查询失败"));
         const options = (Array.isArray(data.customers?.records) ? data.customers.records : []).map((record: CrmRecord) => ({ id: String(record.id), name: String(record.accountName || "未命名客户") }));
         const opportunities = (Array.isArray(data.opportunities?.records) ? data.opportunities.records : []).map((record: CrmRecord) => ({
           id: String(record.id), name: String(record.opportunityName || "未命名商机"), accountId: String(record.accountId || ""),
@@ -684,6 +837,9 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
   const [refresh, setRefresh] = useState(0);
   const [scope, setScope] = useState<DataScope>("mine");
   const [access, setAccess] = useState<AccessInfo | null>(null);
+  const [customerCursor, setCustomerCursor] = useState<string | null>(null);
+  const [loadingMoreCustomers, setLoadingMoreCustomers] = useState(false);
+  const [customerPageError, setCustomerPageError] = useState<string | null>(null);
   const [lifecycleDraft, setLifecycleDraft] = useState<{ id: string; action: "attention" | "pause" | "close" | "reactivate"; reason: string; reviewDate: string; taskTitle?: string; taskDueDate?: string } | null>(null);
   const [lifecycleSaving, setLifecycleSaving] = useState(false);
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null);
@@ -692,50 +848,21 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
     let active = true;
     fetch(`/api/crm/data?view=customers&scope=${scope}`, { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "客户查询失败");
-        const records = Array.isArray(data.customers?.records) ? data.customers.records : [];
-        const userName = data.userName || "当前用户";
-        const currentUserId = String(data.user?.userId || "");
-        const owners = data.owners && typeof data.owners === "object" ? data.owners as Record<string, string> : {};
-        const mapped: CustomerItem[] = records.map((record: Record<string, unknown>) => {
-          const recent = record.recentActivityRecordTime || record.RecentVisitDate__c || record.updatedAt;
-          const activeDays = daysFromNow(recent);
-          const createdDays = daysFromNow(record.createdAt);
-          const storedLifecycle = String(record.lifecycleStatus || "");
-          const lifecycle: CustomerLifecycle = ["new", "active", "attention", "paused", "closed"].includes(storedLifecycle)
-            ? storedLifecycle as CustomerLifecycle
-            : createdDays <= 30 ? "new" : activeDays <= 7 ? "active" : "attention";
-          const nextTask = record.nextTask && typeof record.nextTask === "object" ? record.nextTask as { id?: string; title?: string; dueAt?: string } : null;
-          return {
-            id: String(record.id),
-            name: String(record.accountName || "未命名客户"),
-            form: String(record.AccountTypeJJ__c || record.entityType || "类型待确认"),
-            city: String(record.cityA__c || record.provinceA__c || "地区待确认"),
-            owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? userName : `销售 ${String(record.ownerId || "待确认")}`),
-            ownedByMe: String(record.ownerId || "") === currentUserId,
-            products: "从客户360加载",
-            next: String(nextTask?.title || (activeDays <= 7 ? "查看最近进展" : "补充下一动作")),
-            health: lifecycle === "new" ? "新建客户" : lifecycle === "active" ? "本周活跃" : "需要关注",
-            tone: lifecycle === "new" ? "violet" : lifecycle === "active" ? "blue" : "red",
-            lifecycle,
-            lastFact: recent ? `最近 CRM 事实：${shortDate(recent)}` : "尚未取得有效客户事实",
-            lastActiveDays: activeDays,
-            pauseReason: record.lifecycleReason ? String(record.lifecycleReason) : undefined,
-            reviewDate: record.reviewDate ? String(record.reviewDate) : undefined,
-            version: Number(record.version || 0),
-            nextTask,
-          };
-        });
+        const data = await response.json() as CrmRecord;
+        if (!response.ok) throw new Error(String(data.error || "客户查询失败"));
+        const mapped = customerItemsFromPayload(data);
         if (active) {
           setItems(mapped);
-          setAccess(data.access || null);
+          setAccess(crmObject(data.access) as AccessInfo);
+          setCustomerCursor(nextPageCursor(data.customers));
+          setCustomerPageError(null);
           setDataState("real");
         }
       })
       .catch((error) => {
         if (!active) return;
         setItems([]);
+        setCustomerCursor(null);
         setDataError(error instanceof Error ? error.message : "客户查询失败");
         setDataState("error");
       });
@@ -745,9 +872,28 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
   function changeScope(nextScope: DataScope) {
     if (nextScope === scope) return;
     setItems([]);
+    setCustomerCursor(null);
+    setCustomerPageError(null);
     setDataState("loading");
     setDataError(null);
     setScope(nextScope);
+  }
+
+  async function loadMoreCustomers() {
+    if (!customerCursor || loadingMoreCustomers) return;
+    setLoadingMoreCustomers(true);
+    setCustomerPageError(null);
+    try {
+      const response = await fetch(`/api/crm/data?view=customers&scope=${scope}&cursor=${encodeURIComponent(customerCursor)}`, { cache: "no-store" });
+      const data = await response.json() as CrmRecord;
+      if (!response.ok) throw new Error(String(data.error || "下一页客户查询失败"));
+      setItems(current => mergeById(current, customerItemsFromPayload(data)));
+      setCustomerCursor(nextPageCursor(data.customers));
+    } catch (error) {
+      setCustomerPageError(error instanceof Error ? error.message : "下一页客户查询失败");
+    } finally {
+      setLoadingMoreCustomers(false);
+    }
   }
 
   const visibleItems = items.filter((item) => tab === "全部客户" || (tab === "本周活跃" ? item.lastActiveDays <= 7 && item.lifecycle !== "paused" : ["attention", "paused"].includes(item.lifecycle) || item.next === "需补充" || item.next === "补充下一动作"));
@@ -814,7 +960,7 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
     {dataState === "error" && <DataFailure message={dataError || "客户查询失败"} onRetry={() => { setDataState("loading"); setDataError(null); setRefresh((value) => value + 1); }} />}
     {lifecycleMessage && <div className="board-notice">{lifecycleMessage}</div>}
     <section className="metric-grid compact"><Metric label={scope === "mine" ? "我负责的客户" : scope === "team" ? "团队客户" : "企培客户"} value={String(items.filter((item) => item.lifecycle !== "closed").length)} detail={`${items.filter((item) => item.lifecycle === "new").length} 个新建观察`} accent="indigo" /><Metric label="7天有新事实" value={String(activeCount)} detail={`活跃客户占 ${items.length ? Math.round(activeCount / items.length * 100) : 0}%`} accent="green" /><Metric label="需要关注" value={String(attentionCount)} detail="风险与暂停客户" accent="amber" /><Metric label="暂停培育" value={String(items.filter((item) => item.lifecycle === "paused").length)} detail="均需设置复评日期" accent="blue" /></section>
-    {mode === "list" && dataState !== "error" && <section className="panel table-panel"><div className="filter-row"><div className="tabs">{(["全部客户", "本周活跃", "需要关注"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><div className="filter-summary">当前 {visibleItems.length} 个 · {scope === "mine" ? "负责人：我" : "按负责人展示"}</div></div><div className="customer-table"><div className="customer-table-head"><span>客户</span><span>当前产品</span><span>下一动作</span><span>经营状态</span><span>客户生命周期</span><span /></div>{visibleItems.map((item) => <div className="customer-row" key={item.id}><div className="customer-name"><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.form} · {item.city} · {item.owner}</small></div></div><span>{item.products}</span><span>{item.next}</span><span className={`status ${item.tone}`}>{item.health}</span><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span>{item.ownedByMe ? <button onClick={onCompose}>记录进展</button> : <span className="read-only-pill">只读</span>}</div>)}{dataState === "real" && !visibleItems.length && <div className="empty-state">当前范围没有客户。</div>}{dataState === "loading" && <div className="empty-state">正在读取客户…</div>}</div></section>}
+    {mode === "list" && dataState !== "error" && <section className="panel table-panel"><div className="filter-row"><div className="tabs">{(["全部客户", "本周活跃", "需要关注"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><div className="filter-summary">当前 {visibleItems.length} 个 · {scope === "mine" ? "负责人：我" : "按负责人展示"}</div></div><div className="customer-table"><div className="customer-table-head"><span>客户</span><span>当前产品</span><span>下一动作</span><span>经营状态</span><span>客户生命周期</span><span /></div>{visibleItems.map((item) => <div className="customer-row" key={item.id}><div className="customer-name"><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.form} · {item.city} · {item.owner}</small></div></div><span>{item.products}</span><span>{item.next}</span><span className={`status ${item.tone}`}>{item.health}</span><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span>{item.ownedByMe ? <button onClick={onCompose}>记录进展</button> : <span className="read-only-pill">只读</span>}</div>)}{dataState === "real" && !visibleItems.length && <div className="empty-state">当前范围没有客户。</div>}{dataState === "loading" && <div className="empty-state">正在读取客户…</div>}</div>{customerPageError && <div className="pagination-error">{customerPageError}</div>}{customerCursor && <div className="pagination-bar"><span>已加载 {items.length} 个客户</span><button type="button" onClick={() => void loadMoreCustomers()} disabled={loadingMoreCustomers}>{loadingMoreCustomers ? "正在加载…" : "加载更多客户"}</button></div>}</section>}
     {mode === "lifecycle" && dataState !== "error" && <><section className="customer-lifecycle-overview"><article className="panel"><span className="eyebrow">独立于商机阶段</span><h3>客户关系状态</h3><p>同一个客户可以有多个商机；暂停一条商机不等于暂停整个客户，关闭客户也必须保留历史交易与活动。</p></article><article className="panel"><span className="eyebrow">建议规则 · 待业务校准</span><h3>治理触发条件</h3><div className="admission-list"><span>30 天无有效事实 → 风险关注</span><span>暂停必须设置复评日期</span><span>重新激活必须生成下一任务</span><span>关闭必须记录明确原因</span></div></article></section>
       <section className="panel customer-lifecycle-panel"><div className="customer-lifecycle-head"><div><span className="eyebrow">客户生命周期治理</span><h3>关系健康度与处置队列</h3><p>这里治理客户关系，不直接修改任何一条商机的事实阶段。</p></div></div><div className="customer-lifecycle-table"><div className="customer-lifecycle-row head"><span>客户</span><span>生命周期</span><span>最近事实</span><span>下一动作/复评</span><span>处置</span></div>{items.filter((item) => item.lifecycle !== "closed").map((item) => <div className="customer-lifecycle-row" key={item.id}><div><strong>{item.name}</strong><small>{item.form} · {item.owner}</small></div><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span><p>{item.lastFact}<small>{item.lastActiveDays >= 999 ? "时间未知" : `${item.lastActiveDays} 天前`}</small></p><div><strong>{item.next}</strong><small>{item.lifecycle === "paused" ? `${item.reviewDate || "待设置"} 复评` : item.pauseReason || "持续经营"}</small></div>{item.ownedByMe ? <div className="row-actions">{item.lifecycle === "paused" ? <button onClick={() => setLifecycleDraft({ id: item.id, action: "reactivate", reason: "重新取得客户经营窗口", reviewDate: "", taskTitle: "确认恢复后的下一动作", taskDueDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10) })}>重新激活</button> : <><button onClick={() => setLifecycleDraft({ id: item.id, action: "attention", reason: "连续缺少有效客户事实", reviewDate: "" })}>关注</button><button onClick={() => setLifecycleDraft({ id: item.id, action: "pause", reason: "客户经营窗口暂不明确", reviewDate: "2026-08-24" })}>暂停</button><button onClick={() => setLifecycleDraft({ id: item.id, action: "close", reason: "客户明确不再合作", reviewDate: "" })}>关闭</button></>}</div> : <span className="read-only-pill">只读</span>}</div>)}</div></section></>}
     {lifecycleDraft && <div className="modal-backdrop" role="presentation"><form className="lifecycle-dialog" role="dialog" aria-modal="true" aria-label="客户生命周期处置" onSubmit={applyCustomerLifecycle}><header><div><span className="eyebrow">客户生命周期处置</span><h3>{lifecycleDraft.action === "reactivate" ? "重新激活客户关系" : lifecycleDraft.action === "pause" ? "暂停客户培育" : lifecycleDraft.action === "attention" ? "标记为需要关注" : "关闭客户关系"}</h3><p>该操作只改变客户关系状态，不会把客户名下商机自动推进、暂停或关闭。</p></div><button type="button" onClick={() => setLifecycleDraft(null)}>×</button></header><label>处置依据<input required value={lifecycleDraft.reason} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reason: event.target.value })} /></label>{lifecycleDraft.action === "pause" && <label>重新评估日期<input type="date" required value={lifecycleDraft.reviewDate} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reviewDate: event.target.value })} /></label>}{lifecycleDraft.action === "reactivate" && <><label>恢复后的下一任务<input required value={lifecycleDraft.taskTitle || ""} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, taskTitle: event.target.value })} /></label><label>任务截止日期<input type="date" required value={lifecycleDraft.taskDueDate || ""} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, taskDueDate: event.target.value })} /></label></>}<footer><button type="button" className="secondary-button" onClick={() => setLifecycleDraft(null)}>取消</button><button className="primary-button" type="submit" disabled={lifecycleSaving}>{lifecycleSaving ? "正在写入…" : "确认客户生命周期变化"}</button></footer></form></div>}
@@ -840,12 +986,18 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
   const [forecastError, setForecastError] = useState<string | null>(null);
   const [pipelineRefresh, setPipelineRefresh] = useState(0);
   const [forecastRefresh, setForecastRefresh] = useState(0);
+  const [forecastCursor, setForecastCursor] = useState<string | null>(null);
+  const [loadingMoreForecast, setLoadingMoreForecast] = useState(false);
+  const [forecastPageError, setForecastPageError] = useState<string | null>(null);
   const [stageIds, setStageIds] = useState<Partial<Record<Exclude<FunnelStage, "lead">, string>>>({});
   const [newLead, setNewLead] = useState<NewLeadDraft | null>(null);
   const [writeBusy, setWriteBusy] = useState(false);
   const [writeClock] = useState(() => Date.now());
   const [scope, setScope] = useState<DataScope>("mine");
   const [access, setAccess] = useState<AccessInfo | null>(null);
+  const [pipelineCursor, setPipelineCursor] = useState<string | null>(null);
+  const [loadingMorePipeline, setLoadingMorePipeline] = useState(false);
+  const [pipelinePageError, setPipelinePageError] = useState<string | null>(null);
 
   const visibleCards = cards.filter((card) => (customerKind === "全部" || card.customerKind === customerKind) && (includePaused || card.lifecycle === "active"));
   const activeOpportunities = cards.filter((card) => card.kind === "opportunity" && card.lifecycle === "active");
@@ -859,81 +1011,15 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
     let active = true;
     fetch(`/api/crm/data?view=pipeline&scope=${scope}`, { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "潜客与商机查询失败");
-        const customerRecords = Array.isArray(data.customers?.records) ? data.customers.records : [];
-        const currentUserId = String(data.user?.userId || "");
-        const owners = data.owners && typeof data.owners === "object" ? data.owners as Record<string, string> : {};
-        const customerById = new Map<string, CrmRecord>(customerRecords.map((record: CrmRecord) => [String(record.id), record]));
-        const lifecycleById = data.opportunityLifecycle?.records && typeof data.opportunityLifecycle.records === "object" ? data.opportunityLifecycle.records as Record<string, CrmRecord> : {};
-        const dictionary = Array.isArray(data.stageDictionary?.stages) ? data.stageDictionary.stages : [];
-        const stageById = new Map(dictionary.map((stage: CrmRecord) => [String(stage.stageId), String(stage.normalizedStage || "unknown")]));
-        const discoveredStageIds: Partial<Record<Exclude<FunnelStage, "lead">, string>> = {};
-        dictionary.forEach((item: CrmRecord) => {
-          const normalized = String(item.normalizedStage || "unknown");
-          const stage = normalized === "business" ? "commercial" : normalized;
-          if (["interest", "experience", "validation", "commercial"].includes(stage) && item.stageId) {
-            discoveredStageIds[stage as Exclude<FunnelStage, "lead">] = String(item.stageId);
-          }
-        });
-        const opportunityCards: PipelineCard[] = (Array.isArray(data.opportunities?.records) ? data.opportunities.records : []).flatMap((record: CrmRecord) => {
-          const normalized = stageById.get(String(record.saleStageId || ""));
-          if (!normalized || normalized === "unknown") return [];
-          const stage: FunnelStage = normalized === "business" ? "commercial" : normalized as FunnelStage;
-          const customer: CrmRecord = customerById.get(String(record.accountId || "")) || {};
-          const lifecycle = lifecycleById[String(record.id)] || {};
-          const customerName = String(customer.accountName || `客户 ${String(record.accountId || "待关联")}`);
-          const typeText = String(customer.AccountTypeJJ__c || customer.entityType || "");
-          return [{
-            id: String(record.id),
-            accountId: String(record.accountId || ""),
-            updatedAt: record.updatedAt as string | number | undefined,
-            kind: "opportunity" as const,
-            stage,
-            lifecycle: (["active", "paused", "closed"].includes(String(lifecycle.status)) ? String(lifecycle.status) : "active") as LifecycleStatus,
-            lifecycleVersion: Number(lifecycle.version || 0),
-            title: String(record.opportunityName || "未命名商机"),
-            customer: customerName,
-            customerKind: /个人|老师|名师/.test(typeText) ? "个体老师" as const : "教育机构" as const,
-            owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? "我" : `销售 ${String(record.ownerId || "待确认")}`),
-            ownedByMe: String(record.ownerId || "") === currentUserId,
-            product: "产品信息待从商机详情补齐",
-            evidence: `CRM 真实商机 · 阶段更新时间 ${shortDate(record.updatedAt)}`,
-            stageAge: `最近更新 ${shortDate(record.updatedAt)}`,
-            amount: moneyLabel(Number(record.money || 0)),
-            nextTask: "补充可验证的下一任务",
-            due: "需处置",
-            taskSource: "CRM 商机",
-            pauseReason: lifecycle.reason ? String(lifecycle.reason) : undefined,
-            reviewDate: lifecycle.reviewDate ? String(lifecycle.reviewDate) : undefined,
-          }];
-        });
-        const rawLeadRecords = data.leads?.result?.records || data.leads?.data?.records || data.leads?.records || [];
-        const leadCards: PipelineCard[] = (Array.isArray(rawLeadRecords) ? rawLeadRecords : []).map((record: CrmRecord) => {
-          const customerName = String(record.companyName || record.name || "未命名潜客");
-          return {
-            id: String(record.id),
-            kind: "lead",
-            stage: "lead",
-            lifecycle: "active",
-            title: customerName,
-            customer: customerName,
-            contact: record.name ? String(record.name) : undefined,
-            customerKind: /老师|个人/.test(customerName) || !record.companyName ? "个体老师" : "教育机构",
-            owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? "我" : `销售 ${String(record.ownerId || "待确认")}`),
-            ownedByMe: String(record.ownerId || "") === currentUserId,
-            product: "待首次沟通确认",
-            evidence: record.mobile ? "CRM 潜客已有联系电话" : "CRM 潜客尚缺联系电话",
-            stageAge: `最近更新 ${shortDate(record.updatedAt || record.createdAt)}`,
-            nextTask: "完成首次联系并确认客户主体、联系人和使用场景",
-            due: "尽快",
-            taskSource: "CRM 潜客",
-          };
-        });
+        const data = await response.json() as CrmRecord;
+        if (!response.ok) throw new Error(String(data.error || "潜客与商机查询失败"));
+        const page = pipelinePageFromPayload(data);
         if (active) {
-          setCards([...leadCards, ...opportunityCards]);
-          setAccess(data.access || null);
-          setStageIds(discoveredStageIds);
+          setCards(page.cards);
+          setAccess(crmObject(data.access) as AccessInfo);
+          setStageIds(page.stageIds);
+          setPipelineCursor(nextPageCursor(data));
+          setPipelinePageError(null);
           setPipelineDataState("real");
           setBoardNotice("当前看板已读取真实潜客、客户、商机、阶段和生命周期；潜客转化、阶段调整以及暂停/关闭/激活均会在人工确认后写回并保留审计。");
         }
@@ -941,56 +1027,84 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
       .catch((error) => {
         if (!active) return;
         setCards([]);
+        setPipelineCursor(null);
         setPipelineError(error instanceof Error ? error.message : "潜客与商机查询失败");
         setPipelineDataState("error");
       });
     return () => { active = false; };
   }, [pipelineRefresh, scope]);
 
+  async function loadMorePipeline() {
+    if (!pipelineCursor || loadingMorePipeline) return;
+    setLoadingMorePipeline(true);
+    setPipelinePageError(null);
+    try {
+      const response = await fetch(`/api/crm/data?view=pipeline&scope=${scope}&cursor=${encodeURIComponent(pipelineCursor)}`, { cache: "no-store" });
+      const data = await response.json() as CrmRecord;
+      if (!response.ok) throw new Error(String(data.error || "下一页潜客与商机查询失败"));
+      const page = pipelinePageFromPayload(data);
+      setCards(current => mergeById(current, page.cards));
+      setStageIds(current => ({ ...current, ...page.stageIds }));
+      setPipelineCursor(nextPageCursor(data));
+    } catch (error) {
+      setPipelinePageError(error instanceof Error ? error.message : "下一页潜客与商机查询失败");
+    } finally {
+      setLoadingMorePipeline(false);
+    }
+  }
+
   useEffect(() => {
     if (mode !== "forecast") return;
     let active = true;
     fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}`, { cache: "no-store" })
       .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "商机预测查询失败");
-        const accountNames = new Map((data.customers?.records || []).map((record: Record<string, unknown>) => [String(record.id), String(record.accountName || "未命名客户")]));
-        const currentUserId = String(data.user?.userId || "");
-        const owners = data.owners && typeof data.owners === "object" ? data.owners as Record<string, string> : {};
-        const mapped: ForecastItem[] = (data.opportunities?.records || []).map((record: Record<string, unknown>) => ({
-          id: String(record.id),
-          name: String(record.opportunityName || "未命名商机"),
-          customer: accountNames.get(String(record.accountId)) || `客户 ${String(record.accountId || "待关联")}`,
-          stage: record.saleStageId ? `CRM 阶段 ${String(record.saleStageId)}` : "阶段待确认",
-          amount: Number(record.money || 0),
-          forecastAmount: Number(record.fcastMoney || record.money || 0),
-          evidence: `CRM 预计关闭：${shortDate(record.closeDate)}`,
-          next: `预计 ${shortDate(record.closeDate)}`,
-          risk: Number(record.fcastMoney || 0) > 0 ? "已有预测金额" : "待补预测依据",
-          closeDate: String(record.closeDate || ""),
-          owner: owners[String(record.ownerId || "")] || (String(record.ownerId || "") === currentUserId ? "我" : `销售 ${String(record.ownerId || "待确认")}`),
-          ownedByMe: String(record.ownerId || "") === currentUserId,
-        }));
+        const data = await response.json() as CrmRecord;
+        if (!response.ok) throw new Error(String(data.error || "商机预测查询失败"));
+        const mapped = forecastItemsFromPayload(data);
         if (active) {
           setForecastItems(mapped);
+          setForecastCursor(nextPageCursor(data.opportunities));
+          setForecastPageError(null);
           setForecastDataState("real");
         }
       })
       .catch((error) => {
         if (!active) return;
         setForecastItems([]);
+        setForecastCursor(null);
         setForecastError(error instanceof Error ? error.message : "商机预测查询失败");
         setForecastDataState("error");
       });
     return () => { active = false; };
   }, [forecastPeriod, mode, forecastRefresh, scope]);
 
+  async function loadMoreForecast() {
+    if (!forecastCursor || loadingMoreForecast) return;
+    setLoadingMoreForecast(true);
+    setForecastPageError(null);
+    try {
+      const response = await fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}&cursor=${encodeURIComponent(forecastCursor)}`, { cache: "no-store" });
+      const data = await response.json() as CrmRecord;
+      if (!response.ok) throw new Error(String(data.error || "下一页预测商机查询失败"));
+      setForecastItems(current => mergeById(current, forecastItemsFromPayload(data)));
+      setForecastCursor(nextPageCursor(data.opportunities));
+    } catch (error) {
+      setForecastPageError(error instanceof Error ? error.message : "下一页预测商机查询失败");
+    } finally {
+      setLoadingMoreForecast(false);
+    }
+  }
+
   function changeScope(nextScope: DataScope) {
     if (nextScope === scope) return;
     setCards([]);
+    setPipelineCursor(null);
+    setPipelinePageError(null);
     setForecastItems([]);
     setPipelineDataState("loading");
     setForecastDataState("loading");
+    setForecastCursor(null);
+    setForecastPageError(null);
     setPipelineError(null);
     setForecastError(null);
     setScope(nextScope);
@@ -1278,6 +1392,8 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
           })}
         </div>
       </section>
+      {pipelinePageError && <div className="pagination-error">{pipelinePageError}</div>}
+      {pipelineCursor && <div className="pagination-bar pipeline-pagination"><span>已加载 {cards.filter(card => card.kind === "lead").length} 个潜客、{cards.filter(card => card.kind === "opportunity").length} 个商机</span><button type="button" onClick={() => void loadMorePipeline()} disabled={loadingMorePipeline}>{loadingMorePipeline ? "正在加载…" : "加载更多潜客与商机"}</button></div>}
       <p className="prototype-note"><strong>{pipelineDataState === "real" ? "当前为真实可写看板：" : "当前不可写："}</strong>{pipelineDataState === "real" ? "潜客拖拽会可恢复地创建或复用客户、创建商机和下一任务；商机拖拽会更新阶段并生成下一任务；暂停、关闭和重新激活独立于事实阶段并保留审计。" : "等待真实 CRM 数据读取成功后才能进行阶段和生命周期操作。"}</p>
     </>}
 
@@ -1285,7 +1401,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
       <section className="forecast-strip"><div><span>{forecastPeriod === "30d" ? "未来30天目标" : "本季度目标"}</span><strong>{forecastTarget === null ? "—" : moneyLabel(forecastTarget)}</strong></div><i /><div><span>保底预测</span><strong>{moneyLabel(baseForecast)}</strong><small>{forecastTarget ? `${Math.round(baseForecast / forecastTarget * 100)}% 覆盖` : "目标口径待接入"}</small></div><div><span>最佳情况</span><strong>{moneyLabel(bestForecast)}</strong><small>{forecastTarget ? `${Math.round(bestForecast / forecastTarget * 100)}% 覆盖` : "基于当前商机"}</small></div><div className="forecast-gap"><span>目标差额</span><strong>{forecastTarget === null ? "—" : moneyLabel(Math.max(0, forecastTarget - baseForecast))}</strong><small>目标接入后计算</small></div></section>
       <section className="forecast-explanation"><strong>预测只读取开放商机</strong><span>潜客、暂停客户和没有事实依据的金额不进入预测；右侧显示当前数据来源。</span><span className={`data-source-badge ${forecastDataState}`}>{forecastDataState === "real" ? "企培 MCP 实时数据" : forecastDataState === "loading" ? "正在刷新" : "真实数据读取失败"}</span></section>
       {forecastDataState === "error" && <DataFailure message={forecastError || "商机预测查询失败"} onRetry={() => { setForecastDataState("loading"); setForecastError(null); setForecastRefresh((value) => value + 1); }} />}
-      <section className="panel table-panel"><div className="filter-row"><div className="tabs"><button className={forecastPeriod === "30d" ? "active" : ""} onClick={() => { if (forecastPeriod !== "30d") { setForecastDataState("loading"); setForecastPeriod("30d"); } }}>未来30天</button><button className={forecastPeriod === "quarter" ? "active" : ""} onClick={() => { if (forecastPeriod !== "quarter") { setForecastDataState("loading"); setForecastPeriod("quarter"); } }}>本季度</button></div><div className="filter-summary">{forecastItems.length} 个开放商机 · {scope === "mine" ? "负责人：我" : "按负责人展示"}</div></div><div className="opp-table"><div className="opp-table-head"><span>商机</span><span>事实阶段</span><span>客观证据</span><span>金额</span><span>预计关闭</span><span>风险</span><span /></div>{forecastItems.map((item) => <div className="opp-row" key={item.id}><div><strong>{item.name}</strong><small>{item.customer} · {item.owner}</small></div><span className="stage-pill">{item.stage}</span><span>{item.evidence}</span><strong>{moneyLabel(item.amount)}</strong><span>{shortDate(item.closeDate)}</span><span className="risk-pill">{item.risk}</span>{item.ownedByMe ? <button onClick={onCompose}>校准</button> : <span className="read-only-pill">只读</span>}</div>)}{!forecastItems.length && <div className="empty-state">当前期间没有符合条件的开放商机。</div>}</div></section>
+      <section className="panel table-panel"><div className="filter-row"><div className="tabs"><button className={forecastPeriod === "30d" ? "active" : ""} onClick={() => { if (forecastPeriod !== "30d") { setForecastDataState("loading"); setForecastCursor(null); setForecastPeriod("30d"); } }}>未来30天</button><button className={forecastPeriod === "quarter" ? "active" : ""} onClick={() => { if (forecastPeriod !== "quarter") { setForecastDataState("loading"); setForecastCursor(null); setForecastPeriod("quarter"); } }}>本季度</button></div><div className="filter-summary">{forecastItems.length} 个开放商机 · {scope === "mine" ? "负责人：我" : "按负责人展示"}</div></div><div className="opp-table"><div className="opp-table-head"><span>商机</span><span>事实阶段</span><span>客观证据</span><span>金额</span><span>预计关闭</span><span>风险</span><span /></div>{forecastItems.map((item) => <div className="opp-row" key={item.id}><div><strong>{item.name}</strong><small>{item.customer} · {item.owner}</small></div><span className="stage-pill">{item.stage}</span><span>{item.evidence}</span><strong>{moneyLabel(item.amount)}</strong><span>{shortDate(item.closeDate)}</span><span className="risk-pill">{item.risk}</span>{item.ownedByMe ? <button onClick={onCompose}>校准</button> : <span className="read-only-pill">只读</span>}</div>)}{!forecastItems.length && <div className="empty-state">当前期间没有符合条件的开放商机。</div>}</div>{forecastPageError && <div className="pagination-error">{forecastPageError}</div>}{forecastCursor && <div className="pagination-bar"><span>已加载 {forecastItems.length} 个预测商机</span><button type="button" onClick={() => void loadMoreForecast()} disabled={loadingMoreForecast}>{loadingMoreForecast ? "正在加载…" : "加载更多预测商机"}</button></div>}</section>
     </>}
 
     {mode === "lifecycle" && <>
