@@ -149,6 +149,10 @@ export async function GET(request: NextRequest) {
       const opportunityIds = opportunityRecords.map(record => String(record.id || "")).filter(Boolean);
       const opportunityLifecycle = opportunityIds.length
         ? await upstreamJson(`/api/opportunity-lifecycle?opportunityIds=${encodeURIComponent(opportunityIds.join(","))}`, token)
+          .catch((error) => ({
+            records: {},
+            warning: error instanceof Error ? error.message : "生命周期扩展状态暂时不可用",
+          }))
         : { records: {} };
       return NextResponse.json({
         source: "enterprise-training-mcp",
