@@ -147,13 +147,18 @@ export async function GET(request: NextRequest) {
       const scopedCustomers = await withReferencedCustomers(token, customers, opportunities);
       const opportunityRecords = Array.isArray(opportunities.records) ? opportunities.records as Array<Record<string, unknown>> : [];
       const opportunityIds = opportunityRecords.map(record => String(record.id || "")).filter(Boolean);
-      const opportunityLifecycle = opportunityIds.length
-        ? await upstreamJson(`/api/opportunity-lifecycle?opportunityIds=${encodeURIComponent(opportunityIds.join(","))}`, token)
-          .catch((error) => ({
+      let opportunityLifecycle: JsonObject = { records: {} };
+      if (opportunityIds.length) {
+        try {
+          opportunityLifecycle = await upstreamJson(`/api/opportunity-lifecycle?opportunityIds=${encodeURIComponent(opportunityIds.join(","))}`, token);
+        } catch (error) {
+          // 生命周期是本系统的附加状态，不能反过来阻断销售易中的真实商机展示。
+          opportunityLifecycle = {
             records: {},
             warning: error instanceof Error ? error.message : "生命周期扩展状态暂时不可用",
-          }))
-        : { records: {} };
+          };
+        }
+      }
       return NextResponse.json({
         source: "enterprise-training-mcp",
         asOf: new Date().toISOString(),
