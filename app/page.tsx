@@ -32,7 +32,19 @@ type TaskItem = {
   associationId?: string;
   associationType?: "lead" | "account" | "opportunity";
   statusLabel?: string;
+  priority?: string;
+  accountId?: string;
+  opportunityId?: string;
+  leadId?: string;
+  eeoAccountId?: string;
+  eeoUid?: string;
+  eeoAccountName?: string;
+  expiresAt?: string | number;
 };
+
+function salesEasySearchUrl(term: string) {
+  return `https://crm-tencent.xiaoshouyi.com/bff/neoweb#/globalSearch/crm/${encodeURIComponent(term)}?searchEntity=all`;
+}
 
 type CustomerLifecycle = "new" | "active" | "attention" | "paused" | "closed";
 
@@ -451,6 +463,9 @@ export default function Home() {
             owner: "我", action: "完成", dueAt: record.planFinishDate as string | number | undefined,
             associationId: association.id ? String(association.id) : undefined,
             associationType: association.type === "lead" ? "lead" : association.type === "opportunity" ? "opportunity" : "account", statusLabel,
+            accountId: association.type === "account" && association.id ? String(association.id) : undefined,
+            opportunityId: association.type === "opportunity" && association.id ? String(association.id) : undefined,
+            leadId: association.type === "lead" && association.id ? String(association.id) : undefined,
           };
         });
         const openRuleTasks = realRecords
@@ -504,6 +519,14 @@ export default function Home() {
             action: "生成任务",
             associationId: leadId || opportunityId || accountId || undefined,
             associationType: leadId ? "lead" : opportunityId ? "opportunity" : "account",
+            priority,
+            accountId: accountId || undefined,
+            opportunityId: opportunityId || undefined,
+            leadId: leadId || undefined,
+            eeoAccountId: evidence.eeoAccountId ? String(evidence.eeoAccountId) : undefined,
+            eeoUid: evidence.uid ? String(evidence.uid) : undefined,
+            eeoAccountName: evidence.eeoAccountName ? String(evidence.eeoAccountName) : undefined,
+            expiresAt: evidence.expireTime as string | number | undefined,
           };
         });
         if (active) {
@@ -756,7 +779,7 @@ export default function Home() {
         </header>
 
         {view === "workbench" && <Workbench userName={displayName} tasks={tasks} onCompose={openComposer} onFinish={finishTask} onJump={setView} />}
-        {view === "tasks" && <TaskCenter tasks={visibleTasks} tab={taskTab} setTab={setTaskTab} dataState={taskDataState} error={taskError} message={taskMessage} busyId={taskBusyId} onRetry={() => { setTaskDataState("loading"); setTaskError(null); setTaskRefresh((value) => value + 1); }} onPrimary={handleTaskPrimary} onReschedule={rescheduleTask} onCompose={openComposer} />}
+        {view === "tasks" && <TaskCenter tasks={visibleTasks} tab={taskTab} setTab={setTaskTab} dataState={taskDataState} error={taskError} message={taskMessage} busyId={taskBusyId} onRetry={() => { setTaskDataState("loading"); setTaskError(null); setTaskRefresh((value) => value + 1); }} onPrimary={handleTaskPrimary} onReschedule={rescheduleTask} onCompose={openComposer} onJump={setView} />}
         {view === "customers" && <CustomerList onCompose={openComposer} />}
         {view === "opportunities" && <OpportunityList onCompose={openComposer} />}
         {view === "activities" && <ActivityView onCompose={openComposer} />}
@@ -847,16 +870,37 @@ function PriorityTask({ task, index, onFinish }: { task: TaskItem; index: number
   return <article className="priority-task"><span className={`task-order ${task.urgency}`}>{index}</span><div className="task-main"><div className="task-meta"><span>{task.time}</span><i /> <span>{task.source}</span></div><h4>{task.title}</h4><p><strong>{task.customer}</strong> · 要取得：{task.fact}</p><small>触发原因：{task.reason}</small></div><button className="task-action" onClick={() => onFinish(task.id)}>{task.action}</button></article>;
 }
 
-function TaskCenter({ tasks, tab, setTab, dataState, error, message, busyId, onRetry, onPrimary, onReschedule, onCompose }: { tasks: TaskItem[]; tab: string; setTab: (v: string) => void; dataState: DataState; error: string | null; message: string | null; busyId: string | null; onRetry: () => void; onPrimary: (id: string) => Promise<void>; onReschedule: (id: string) => Promise<void>; onCompose: () => void }) {
+function TaskCenter({ tasks, tab, setTab, dataState, error, message, busyId, onRetry, onPrimary, onReschedule, onCompose, onJump }: { tasks: TaskItem[]; tab: string; setTab: (v: string) => void; dataState: DataState; error: string | null; message: string | null; busyId: string | null; onRetry: () => void; onPrimary: (id: string) => Promise<void>; onReschedule: (id: string) => Promise<void>; onCompose: () => void; onJump: (view: View) => void }) {
+  const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
+  const noticeIsError = Boolean(message && /失败|错误|不属于企培|无法|禁止/.test(message));
+  const searchTerm = selectedTask?.eeoUid || selectedTask?.eeoAccountName || selectedTask?.customer || "";
+  const detailIds = selectedTask ? [
+    ["客户 ID", selectedTask.accountId],
+    ["商机 ID", selectedTask.opportunityId],
+    ["潜客 ID", selectedTask.leadId],
+    ["EEO 账号记录 ID", selectedTask.eeoAccountId],
+    ["EEO UID", selectedTask.eeoUid],
+    ["规则编号", selectedTask.ruleId],
+    ["候选编号", selectedTask.candidateKey],
+  ].filter((item): item is [string, string] => Boolean(item[1])) : [];
+  const expiryDate = selectedTask?.expiresAt ? crmDate(selectedTask.expiresAt) : null;
   return <div className="page-content"><section className="page-intro"><div><span className="eyebrow">统一行动中心</span><h2>不是“做完待办”，而是取得下一项客户事实</h2><p>线索、客户、商机和活动任务在这里统一排序，同时保留它为什么出现。</p></div><button className="primary-button" onClick={onCompose}>＋ 记录处理结果</button></section>
-    {message && <div className="board-notice" role="status"><span>✓</span><p>{message}</p></div>}
+    {message && <div className={`board-notice${noticeIsError ? " warning" : ""}`} role="status"><span>{noticeIsError ? "!" : "✓"}</span><p>{message}</p></div>}
     <section className="task-explain"><article><strong>真实任务</strong><span>已经存在于销售易，可完成或延期</span></article><article><strong>规则建议</strong><span>满足企培已确认规则，人工确认后才生成任务</span></article></section>
     <section className="panel table-panel"><div className="filter-row"><div className="tabs">{["待我处理", "全部任务", "已完成"].map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><span className={`data-source-badge ${dataState}`}>{dataState === "real" ? "销售易真实任务 + 企培规则建议" : dataState === "loading" ? "正在同步任务中心" : "真实数据读取失败"}</span></div>
       {dataState === "error" && <DataFailure message={error || "任务中心读取失败"} onRetry={onRetry} />}
       <div className="task-table"><div className="task-table-head"><span>时效</span><span>任务与对象</span><span>需要取得的事实</span><span>为什么出现</span><span>负责人</span><span /></div>
-      {dataState !== "error" && (tasks.length ? tasks.map((task) => <div className="task-table-row" key={task.id}><span className={`due ${task.urgency}`}>{task.time}</span><div><strong>{task.title}</strong><small>{task.customer} · {task.kind === "candidate" ? "规则建议" : task.statusLabel || "真实任务"} · {task.source}</small></div><span>{task.fact}</span><span>{task.reason}</span><span>{task.owner}</span><div className="task-row-actions">{task.kind === "real" && !task.completed && <button onClick={() => void onReschedule(task.id)} disabled={busyId === task.id}>延期一天</button>}<button onClick={() => task.completed ? onCompose() : void onPrimary(task.id)} disabled={busyId === task.id || task.completed}>{busyId === task.id ? "处理中…" : task.completed ? "已完成" : task.action}</button></div></div>) : dataState === "real" ? <div className="empty-state">当前筛选下没有真实任务或规则建议。</div> : <div className="empty-state">正在读取任务…</div>)}
+      {dataState !== "error" && (tasks.length ? tasks.map((task) => <div className="task-table-row" key={task.id}><span className={`due ${task.urgency}`}>{task.time}</span><button className="task-detail-trigger" onClick={() => setSelectedTask(task)}><strong>{task.title}</strong><small>{task.customer} · {task.kind === "candidate" ? "规则建议" : task.statusLabel || "真实任务"} · {task.source}</small></button><span>{task.fact}</span><span>{task.reason}</span><span>{task.owner}</span><div className="task-row-actions"><button onClick={() => setSelectedTask(task)}>查看详情</button>{task.kind === "real" && !task.completed && <button onClick={() => void onReschedule(task.id)} disabled={busyId === task.id}>延期一天</button>}<button onClick={() => task.completed ? onCompose() : void onPrimary(task.id)} disabled={busyId === task.id || task.completed}>{busyId === task.id ? "处理中…" : task.completed ? "已完成" : task.action}</button></div></div>) : dataState === "real" ? <div className="empty-state">当前筛选下没有真实任务或规则建议。</div> : <div className="empty-state">正在读取任务…</div>)}
       </div>
     </section>
+    {selectedTask && <div className="modal-backdrop" role="presentation" onMouseDown={() => setSelectedTask(null)}><section className="task-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="task-detail-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header><div><span className={`task-detail-priority ${selectedTask.urgency}`}>{selectedTask.priority || selectedTask.statusLabel || (selectedTask.kind === "candidate" ? "规则建议" : "真实任务")}</span><h3 id="task-detail-title">{selectedTask.title}</h3><p>{selectedTask.customer} · {selectedTask.source}</p></div><button aria-label="关闭任务详情" onClick={() => setSelectedTask(null)}>×</button></header>
+      <div className="task-detail-body"><article><span>需要取得的客户事实</span><p>{selectedTask.fact}</p></article><article><span>为什么出现</span><p>{selectedTask.reason}</p></article>
+        {(selectedTask.eeoAccountName || expiryDate) && <div className="task-evidence"><strong>EEO 账号证据</strong>{selectedTask.eeoAccountName && <span>账号：{selectedTask.eeoAccountName}</span>}{expiryDate && <span>到期日：{shortDate(expiryDate)}</span>}</div>}
+        {detailIds.length > 0 && <dl>{detailIds.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
+      </div>
+      <footer><button className="secondary-button" onClick={() => setSelectedTask(null)}>关闭</button>{selectedTask.opportunityId && <button className="secondary-button" onClick={() => { setSelectedTask(null); onJump("opportunities"); }}>去商机看板</button>}{searchTerm && <a className="secondary-button" href={salesEasySearchUrl(searchTerm)} target="_blank" rel="noreferrer">在销售易搜索{selectedTask.eeoUid || selectedTask.eeoAccountName ? " EEO 账号" : "业务对象"}</a>}<button className="primary-button" disabled={busyId === selectedTask.id || selectedTask.completed} onClick={() => void onPrimary(selectedTask.id)}>{busyId === selectedTask.id ? "处理中…" : selectedTask.completed ? "已完成" : selectedTask.action}</button></footer>
+    </section></div>}
   </div>;
 }
 
