@@ -74,7 +74,7 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(page, /加载更多预测商机/);
 });
 
-test("derives page scope from CRM user role facts instead of user allowlists", async () => {
+test("delegates record visibility to CRM OAuth while keeping the enterprise boundary", async () => {
   const [access, dataRoute, envExample, readme] = await Promise.all([
     source("app/lib/crm-access.ts"),
     source("app/api/crm/data/route.ts"),
@@ -85,7 +85,14 @@ test("derives page scope from CRM user role facts instead of user allowlists", a
   assert.match(access, /identity\.accessFacts/);
   assert.match(access, /事业部负责人/);
   assert.match(access, /销售主管/);
+  assert.match(access, /销售运营/);
+  assert.match(access, /财务BP/);
+  assert.match(access, /销售易管理员/);
+  assert.match(access, /xiaoshouyi-oauth\+enterprise-boundary/);
+  assert.match(access, /effective: DataScope = requestedScope/);
   assert.match(dataRoute, /resolveCrmAccess/);
+  assert.match(dataRoute, /get\("scope"\) \|\| "organization"/);
+  assert.match(dataRoute, /canViewOrganization: true/);
   assert.doesNotMatch(`${access}\n${dataRoute}\n${envExample}\n${readme}`, /CRM_MANAGER_USER_IDS|CRM_DIRECTOR_USER_IDS/);
 });
 

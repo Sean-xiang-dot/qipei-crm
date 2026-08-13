@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
 
   const view = request.nextUrl.searchParams.get("view") || "customers";
   const period = request.nextUrl.searchParams.get("period") || "30d";
-  const requestedScope = request.nextUrl.searchParams.get("scope") || "mine";
+  const requestedScope = request.nextUrl.searchParams.get("scope") || "organization";
   const cursor = request.nextUrl.searchParams.get("cursor") || "";
   const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
 
@@ -110,8 +110,9 @@ export async function GET(request: NextRequest) {
       role: access.role,
       requested: access.requested,
       effective: access.effective,
-      canViewTeam: access.role !== "sales",
-      canViewOrganization: access.role === "director",
+      canViewTeam: Boolean(access.departmentId),
+      canViewOrganization: true,
+      authorizationSource: access.authorizationSource,
       evidence: access.evidence,
       identityWarning: typeof whoami.identityWarning === "string" ? whoami.identityWarning : "",
     };
@@ -200,13 +201,13 @@ export async function GET(request: NextRequest) {
       const fromDate = period === "quarter" ? startOfQuarter(now) : new Date(Date.UTC(now.getUTCFullYear() - 1, now.getUTCMonth(), now.getUTCDate()));
       const from = shanghaiDate(fromDate);
       const [customers, opportunities, summary, activities, productMix, stageDictionary, experienceFunnel] = await Promise.all([
-        upstreamJson(`/api/customers?${ownerQuery}&limit=100`, token),
-        upstreamJson(`/api/opportunities?${ownerQuery}&from=${from}&to=${to}&dateField=updatedAt&limit=100`, token),
-        upstreamJson(`/api/dashboard/sales-summary?${ownerQuery}&from=${from}&to=${to}`, token),
+        upstreamJson(`/api/customers?${scopeQuery}&limit=100`, token),
+        upstreamJson(`/api/opportunities?${scopeQuery}&from=${from}&to=${to}&dateField=updatedAt&limit=100`, token),
+        upstreamJson(`/api/dashboard/sales-summary?${scopeQuery}&from=${from}&to=${to}`, token),
         upstreamJson(`/api/activities?${ownerQuery}&from=${from}&to=${to}&limit=200`, token),
-        upstreamJson(`/api/dashboard/customer-product-mix?${ownerQuery}&from=${from}&to=${to}`, token),
+        upstreamJson(`/api/dashboard/customer-product-mix?${scopeQuery}&from=${from}&to=${to}`, token),
         upstreamJson("/api/metadata/opportunity-stages", token),
-        upstreamJson(`/api/dashboard/experience-funnel?${ownerQuery}&from=${from}&to=${to}`, token),
+        upstreamJson(`/api/dashboard/experience-funnel?${scopeQuery}&from=${from}&to=${to}`, token),
       ]);
       return NextResponse.json({
         source: "enterprise-training-mcp",
