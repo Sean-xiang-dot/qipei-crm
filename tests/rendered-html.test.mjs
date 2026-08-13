@@ -68,7 +68,16 @@ test("connects the first usable CRM loop through server-side routes", async () =
   assert.match(page, /失败后可直接重试，不会重复创建已完成步骤/);
   assert.match(page, /选择具体商机并勾选确认时，才会同步阶段/);
   assert.match(dataRoute, /cursorQuery/);
-  assert.match(dataRoute, /limit=50/);
+  assert.match(dataRoute, /limitValue\(request\.nextUrl\.searchParams\.get\("limit"\), 20\)/);
+  assert.match(dataRoute, /PipelineCursorBundle/);
+  assert.match(dataRoute, /includeStageDictionary=1/);
+  assert.match(dataRoute, /keywordQuery/);
+  assert.doesNotMatch(dataRoute, /upstreamJson\(`\/api\/pipeline\?/);
+  assert.match(page, /if \(nextView === "tasks"\) setTasksRequested\(true\)/);
+  assert.match(page, /view !== "tasks" \|\| !tasksRequested/);
+  assert.match(page, /进入任务中心后按需读取/);
+  assert.match(page, /首屏 20 条，可继续加载/);
+  assert.match(page, /搜索后回车进入客户/);
   assert.match(page, /加载更多客户/);
   assert.match(page, /加载更多潜客与商机/);
   assert.match(page, /加载更多预测商机/);

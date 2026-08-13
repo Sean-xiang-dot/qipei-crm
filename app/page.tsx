@@ -266,6 +266,15 @@ function mergeById<T extends { id: string }>(current: T[], incoming: T[]): T[] {
   return [...merged.values()];
 }
 
+function useDebouncedValue<T>(value: T, delay = 350): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [delay, value]);
+  return debounced;
+}
+
 function customerItemsFromPayload(data: CrmRecord): CustomerItem[] {
   const customerPayload = crmObject(data.customers);
   const records = Array.isArray(customerPayload.records) ? customerPayload.records as CrmRecord[] : [];
@@ -414,6 +423,8 @@ export default function Home() {
   const [taskRefresh, setTaskRefresh] = useState(0);
   const [taskMessage, setTaskMessage] = useState<string | null>(null);
   const [taskBusyId, setTaskBusyId] = useState<string | null>(null);
+  const [tasksRequested, setTasksRequested] = useState(false);
+  const [globalSearch, setGlobalSearch] = useState("");
   const [taskClock] = useState(() => Date.now());
   const [composerOpen, setComposerOpen] = useState(false);
   const [composeStep, setComposeStep] = useState<"write" | "review" | "done">("write");
@@ -442,7 +453,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (auth.state !== "authenticated" || !["workbench", "tasks"].includes(view)) return;
+    if (auth.state !== "authenticated" || view !== "tasks" || !tasksRequested) return;
     let active = true;
     fetch("/api/crm/data?view=tasks", { cache: "no-store" })
       .then(async (response) => {
@@ -545,12 +556,12 @@ export default function Home() {
         setTaskDataState("error");
       });
     return () => { active = false; };
-  }, [auth.state, taskClock, taskRefresh, view]);
+  }, [auth.state, taskClock, taskRefresh, tasksRequested, view]);
 
   useEffect(() => {
     if (auth.state !== "authenticated" || !composerOpen) return;
     let active = true;
-    fetch("/api/crm/data?view=pipeline", { cache: "no-store" })
+    fetch("/api/crm/data?view=pipeline&limit=50", { cache: "no-store" })
       .then(async (response) => {
         const data = await readCrmApi(response, "客户查询失败");
         const options = (Array.isArray(data.customers?.records) ? data.customers.records : []).map((record: CrmRecord) => ({ id: String(record.id), name: String(record.accountName || "未命名客户") }));
@@ -672,6 +683,11 @@ export default function Home() {
     void handleTaskPrimary(id);
   }
 
+  function navigate(nextView: View) {
+    if (nextView === "tasks") setTasksRequested(true);
+    setView(nextView);
+  }
+
   function openComposer() {
     setComposeStep("write");
     setAnalysis(null);
@@ -759,7 +775,7 @@ export default function Home() {
         <nav className="main-nav" aria-label="主导航">
           <p className="nav-label">工作空间</p>
           {navigation.map((item) => (
-            <button key={item.id} className={view === item.id ? "nav-item active" : "nav-item"} onClick={() => setView(item.id)}>
+            <button key={item.id} className={view === item.id ? "nav-item active" : "nav-item"} onClick={() => navigate(item.id)}>
               <span className="nav-mark">{item.mark}</span><span>{item.label}</span>{item.badge && <em>{item.badge}</em>}
             </button>
           ))}
@@ -767,7 +783,7 @@ export default function Home() {
         <section className="sidebar-focus">
           <div className="focus-head"><span>任务完成</span><strong>{taskCompletionRate}%</strong></div>
           <div className="focus-meter"><i style={{ width: `${taskCompletionRate}%` }} /></div>
-          <p>{tasks.length} 项真实任务与规则建议，已完成 {completedTaskCount} 项</p>
+          <p>{tasksRequested ? `${tasks.length} 项真实任务与规则建议，已完成 ${completedTaskCount} 项` : "进入任务中心后按需读取"}</p>
         </section>
         <div className="profile"><span className="avatar">{displayName.slice(0, 1)}</span><div><strong>{displayName}</strong><small>企业培训事业部 · CRM 已认证</small></div><button aria-label="退出 CRM" title="退出 CRM" onClick={logout}>退出</button></div>
       </aside>
@@ -775,13 +791,13 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div><p className="breadcrumb">销售经营 / {title}</p><h1>{title}</h1></div>
-          <div className="top-actions"><label className="search"><span>⌕</span><input aria-label="搜索" placeholder="搜索客户、联系人或商机" /></label><button className="notification" aria-label="通知">◌<i /></button><button className="primary-button" onClick={openComposer}><span>＋</span> 记录客户进展</button></div>
+          <div className="top-actions"><label className="search"><span>⌕</span><input aria-label="搜索客户、潜客或商机" value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && view !== "customers" && view !== "opportunities") navigate("customers"); }} placeholder="搜索后回车进入客户；商机页也可搜索" /></label><button className="notification" aria-label="通知">◌<i /></button><button className="primary-button" onClick={openComposer}><span>＋</span> 记录客户进展</button></div>
         </header>
 
-        {view === "workbench" && <Workbench userName={displayName} tasks={tasks} onCompose={openComposer} onFinish={finishTask} onJump={setView} />}
+        {view === "workbench" && <Workbench userName={displayName} tasks={tasks} tasksLoaded={tasksRequested && taskDataState === "real"} onCompose={openComposer} onFinish={finishTask} onJump={navigate} />}
         {view === "tasks" && <TaskCenter tasks={visibleTasks} tab={taskTab} setTab={setTaskTab} dataState={taskDataState} error={taskError} message={taskMessage} busyId={taskBusyId} onRetry={() => { setTaskDataState("loading"); setTaskError(null); setTaskRefresh((value) => value + 1); }} onPrimary={handleTaskPrimary} onReschedule={rescheduleTask} onCompose={openComposer} onJump={setView} />}
-        {view === "customers" && <CustomerList onCompose={openComposer} />}
-        {view === "opportunities" && <OpportunityList onCompose={openComposer} />}
+        {view === "customers" && <CustomerList onCompose={openComposer} searchTerm={globalSearch} />}
+        {view === "opportunities" && <OpportunityList onCompose={openComposer} searchTerm={globalSearch} />}
         {view === "activities" && <ActivityView onCompose={openComposer} />}
         {view === "insights" && <InsightView />}
       </section>
@@ -795,19 +811,19 @@ function CrmLogin({ state, message, onLogin }: { state: "loading" | "anonymous" 
   return <main className="login-shell"><section className="login-panel"><div className="login-brand"><span>CRM</span><div><strong>企培 CRM</strong><small>企业培训销售经营平台</small></div></div><div className="login-visual"><i /><i /><i /><span><b>企培</b><small>CRM</small></span></div><div className="login-copy"><span className="eyebrow">企业培训事业部</span><h1>用你的 CRM 身份<br />进入销售经营平台</h1><p>系统通过企培 CRM MCP 完成销售易 OAuth 授权。每个人使用自己的 CRM 权限，客户和商机数据范围不会越过企培组织边界。</p><div className="login-security"><div><b>01</b><span><strong>CRM 原生身份</strong><small>不使用 ChatGPT 账号作为业务身份</small></span></div><div><b>02</b><span><strong>会话安全隔离</strong><small>Token 仅保存在 HttpOnly 会话中</small></span></div><div><b>03</b><span><strong>企培数据边界</strong><small>查询与写回均由 MCP 服务端校验</small></span></div></div>{state === "loading" ? <button className="crm-login-button" disabled><i />正在检查 CRM 登录状态…</button> : state === "authorizing" ? <button className="crm-login-button" disabled><i className="spinner" />请在新窗口完成销售易授权</button> : <button className="crm-login-button" onClick={onLogin}>使用 CRM 账号登录 <span>→</span></button>}{state === "error" && <div className="login-error">{message}<button onClick={onLogin}>重新尝试</button></div>}<small className="login-footnote">认证服务：Enterprise Training CRM MCP · 销售易 OAuth</small></div></section></main>;
 }
 
-function Workbench({ userName, tasks, onCompose, onFinish, onJump }: { userName: string; tasks: TaskItem[]; onCompose: () => void; onFinish: (id: string) => void; onJump: (view: View) => void }) {
+function Workbench({ userName, tasks, tasksLoaded, onCompose, onFinish, onJump }: { userName: string; tasks: TaskItem[]; tasksLoaded: boolean; onCompose: () => void; onFinish: (id: string) => void; onJump: (view: View) => void }) {
   const openTasks = tasks.filter((task) => !task.completed);
   const overdueTasks = openTasks.filter((task) => task.urgency === "overdue");
   const todayLabel = new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "numeric", day: "numeric" }).format(new Date());
   const firstTask = openTasks[0];
   return <div className="page-content dashboard-page">
     <section className="morning-brief">
-      <div><span className="eyebrow">{todayLabel}</span><h2>早上好，{userName}。<br />当前有 <b>{openTasks.length} 项开放任务</b>。</h2><p>{firstTask ? `建议先处理“${firstTask.title}”，并记录本次取得的客户事实。` : "当前没有开放任务，可以记录新的客户进展。"}</p><div className="brief-actions"><button className="primary-button light" onClick={onCompose}>记录一段客户进展</button><button className="text-button" onClick={() => onJump("tasks")}>查看今日完整安排 →</button></div></div>
-      <div className="brief-score"><div className="score-ring"><strong>{openTasks.length}</strong><span>开放任务</span></div><small>{overdueTasks.length ? `其中 ${overdueTasks.length} 项已逾期` : "当前没有逾期任务"}</small></div>
+      <div><span className="eyebrow">{todayLabel}</span><h2>早上好，{userName}。<br />{tasksLoaded ? <>当前有 <b>{openTasks.length} 项开放任务</b>。</> : <>业务数据将<b>按需读取</b>。</>}</h2><p>{tasksLoaded ? (firstTask ? `建议先处理“${firstTask.title}”，并记录本次取得的客户事实。` : "当前没有开放任务，可以记录新的客户进展。") : "首页不再扫描潜客、客户、商机和周规则；进入对应模块后只读取第一页。"}</p><div className="brief-actions"><button className="primary-button light" onClick={onCompose}>记录一段客户进展</button><button className="text-button" onClick={() => onJump("tasks")}>{tasksLoaded ? "查看今日完整安排" : "按需加载任务中心"} →</button></div></div>
+      <div className="brief-score"><div className="score-ring"><strong>{tasksLoaded ? openTasks.length : "—"}</strong><span>{tasksLoaded ? "开放任务" : "尚未加载"}</span></div><small>{tasksLoaded ? (overdueTasks.length ? `其中 ${overdueTasks.length} 项已逾期` : "当前没有逾期任务") : "避免登录后立即全量查询"}</small></div>
     </section>
 
     <section className="metric-grid">
-      <Metric label="开放事实任务" value={String(openTasks.length)} detail={`${overdueTasks.length} 项已逾期`} accent="indigo" />
+      <Metric label="开放事实任务" value={tasksLoaded ? String(openTasks.length) : "—"} detail={tasksLoaded ? `${overdueTasks.length} 项已逾期` : "进入任务中心后读取"} accent="indigo" />
       <Metric label="30天承诺预测" value="—" detail="进入商机页查看实时数据" accent="blue" />
       <Metric label="体验待反馈" value="—" detail="待接入体验规则口径" accent="amber" />
       <Metric label="开放商机健康度" value="—" detail="待阶段时钟完成业务校准" accent="green" />
@@ -906,7 +922,7 @@ function TaskCenter({ tasks, tab, setTab, dataState, error, message, busyId, onR
   </div>;
 }
 
-function CustomerList({ onCompose }: { onCompose: () => void }) {
+function CustomerList({ onCompose, searchTerm }: { onCompose: () => void; searchTerm: string }) {
   const [items, setItems] = useState<CustomerItem[]>([]);
   const [tab, setTab] = useState<"全部客户" | "本周活跃" | "需要关注">("全部客户");
   const [mode, setMode] = useState<"list" | "lifecycle">("list");
@@ -921,10 +937,12 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
   const [lifecycleDraft, setLifecycleDraft] = useState<{ id: string; action: "attention" | "pause" | "close" | "reactivate"; reason: string; reviewDate: string; taskTitle?: string; taskDueDate?: string } | null>(null);
   const [lifecycleSaving, setLifecycleSaving] = useState(false);
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null);
+  const debouncedSearchTerm = useDebouncedValue(searchTerm.trim());
 
   useEffect(() => {
     let active = true;
-    fetch(`/api/crm/data?view=customers&scope=${scope}`, { cache: "no-store" })
+    const keywordQuery = debouncedSearchTerm ? `&keyword=${encodeURIComponent(debouncedSearchTerm)}` : "";
+    fetch(`/api/crm/data?view=customers&scope=${scope}&limit=20${keywordQuery}`, { cache: "no-store" })
       .then(async (response) => {
         const data = await readCrmApi(response, "客户查询失败") as CrmRecord;
         const mapped = customerItemsFromPayload(data);
@@ -944,7 +962,7 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
         setDataState("error");
       });
     return () => { active = false; };
-  }, [refresh, scope]);
+  }, [debouncedSearchTerm, refresh, scope]);
 
   function changeScope(nextScope: DataScope) {
     if (nextScope === scope) return;
@@ -961,7 +979,8 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
     setLoadingMoreCustomers(true);
     setCustomerPageError(null);
     try {
-      const response = await fetch(`/api/crm/data?view=customers&scope=${scope}&cursor=${encodeURIComponent(customerCursor)}`, { cache: "no-store" });
+      const keywordQuery = debouncedSearchTerm ? `&keyword=${encodeURIComponent(debouncedSearchTerm)}` : "";
+      const response = await fetch(`/api/crm/data?view=customers&scope=${scope}&limit=20${keywordQuery}&cursor=${encodeURIComponent(customerCursor)}`, { cache: "no-store" });
       const data = await readCrmApi(response, "下一页客户查询失败") as CrmRecord;
       setItems(current => mergeById(current, customerItemsFromPayload(data)));
       setCustomerCursor(nextPageCursor(data.customers));
@@ -1034,15 +1053,15 @@ function CustomerList({ onCompose }: { onCompose: () => void }) {
     <section className="customer-command panel"><div className="customer-modes" aria-label="客户工作方式"><button className={mode === "list" ? "active" : ""} onClick={() => setMode("list")}>▦ 客户列表</button><button className={mode === "lifecycle" ? "active" : ""} onClick={() => setMode("lifecycle")}>◌ 生命周期治理</button></div><div className="scope-actions"><ScopeSelector scope={scope} access={access} onChange={changeScope} /><span className={`data-source-badge ${dataState}`}>{dataState === "real" ? "企培 MCP 实时数据" : dataState === "loading" ? "正在读取企培 CRM" : "真实数据读取失败"}</span></div></section>
     {dataState === "error" && <DataFailure message={dataError || "客户查询失败"} onRetry={() => { setDataState("loading"); setDataError(null); setRefresh((value) => value + 1); }} />}
     {lifecycleMessage && <div className="board-notice">{lifecycleMessage}</div>}
-    <section className="metric-grid compact"><Metric label={scope === "mine" ? "我负责的客户" : scope === "team" ? "团队客户" : "企培客户"} value={String(items.filter((item) => item.lifecycle !== "closed").length)} detail={`${items.filter((item) => item.lifecycle === "new").length} 个新建观察`} accent="indigo" /><Metric label="7天有新事实" value={String(activeCount)} detail={`活跃客户占 ${items.length ? Math.round(activeCount / items.length * 100) : 0}%`} accent="green" /><Metric label="需要关注" value={String(attentionCount)} detail="风险与暂停客户" accent="amber" /><Metric label="暂停培育" value={String(items.filter((item) => item.lifecycle === "paused").length)} detail="均需设置复评日期" accent="blue" /></section>
-    {mode === "list" && dataState !== "error" && <section className="panel table-panel"><div className="filter-row"><div className="tabs">{(["全部客户", "本周活跃", "需要关注"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><div className="filter-summary">当前 {visibleItems.length} 个 · {scope === "mine" ? "负责人：我" : "按负责人展示"}</div></div><div className="customer-table"><div className="customer-table-head"><span>客户</span><span>当前产品</span><span>下一动作</span><span>经营状态</span><span>客户生命周期</span><span /></div>{visibleItems.map((item) => <div className="customer-row" key={item.id}><div className="customer-name"><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.form} · {item.city} · {item.owner}</small></div></div><span>{item.products}</span><span>{item.next}</span><span className={`status ${item.tone}`}>{item.health}</span><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span>{item.ownedByMe ? <button onClick={onCompose}>记录进展</button> : <span className="read-only-pill">只读</span>}</div>)}{dataState === "real" && !visibleItems.length && <div className="empty-state">当前范围没有客户。</div>}{dataState === "loading" && <div className="empty-state">正在读取客户…</div>}</div>{customerPageError && <div className="pagination-error">{customerPageError}</div>}{customerCursor && <div className="pagination-bar"><span>已加载 {items.length} 个客户</span><button type="button" onClick={() => void loadMoreCustomers()} disabled={loadingMoreCustomers}>{loadingMoreCustomers ? "正在加载…" : "加载更多客户"}</button></div>}</section>}
+    <section className="metric-grid compact"><Metric label={`${scope === "mine" ? "我负责的客户" : scope === "team" ? "团队客户" : "企培客户"}（已加载）`} value={String(items.filter((item) => item.lifecycle !== "closed").length)} detail="首屏 20 条，可继续加载" accent="indigo" /><Metric label="7天有新事实（已加载）" value={String(activeCount)} detail={`当前页占 ${items.length ? Math.round(activeCount / items.length * 100) : 0}%`} accent="green" /><Metric label="需要关注（已加载）" value={String(attentionCount)} detail="风险与暂停客户" accent="amber" /><Metric label="暂停培育（已加载）" value={String(items.filter((item) => item.lifecycle === "paused").length)} detail="均需设置复评日期" accent="blue" /></section>
+    {mode === "list" && dataState !== "error" && <section className="panel table-panel"><div className="filter-row"><div className="tabs">{(["全部客户", "本周活跃", "需要关注"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}</div><div className="filter-summary">已加载 {visibleItems.length} 个{debouncedSearchTerm ? ` · 搜索“${debouncedSearchTerm}”` : ""} · {scope === "mine" ? "负责人：我" : "按负责人展示"}</div></div><div className="customer-table"><div className="customer-table-head"><span>客户</span><span>当前产品</span><span>下一动作</span><span>经营状态</span><span>客户生命周期</span><span /></div>{visibleItems.map((item) => <div className="customer-row" key={item.id}><div className="customer-name"><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.form} · {item.city} · {item.owner}</small></div></div><span>{item.products}</span><span>{item.next}</span><span className={`status ${item.tone}`}>{item.health}</span><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span>{item.ownedByMe ? <button onClick={onCompose}>记录进展</button> : <span className="read-only-pill">只读</span>}</div>)}{dataState === "real" && !visibleItems.length && <div className="empty-state">{debouncedSearchTerm ? `没有找到与“${debouncedSearchTerm}”匹配的客户。` : "当前范围没有客户。"}</div>}{dataState === "loading" && <div className="empty-state">正在读取首批客户…</div>}</div>{customerPageError && <div className="pagination-error">{customerPageError}</div>}{customerCursor && <div className="pagination-bar"><span>已加载 {items.length} 个客户</span><button type="button" onClick={() => void loadMoreCustomers()} disabled={loadingMoreCustomers}>{loadingMoreCustomers ? "正在加载…" : "加载更多客户"}</button></div>}</section>}
     {mode === "lifecycle" && dataState !== "error" && <><section className="customer-lifecycle-overview"><article className="panel"><span className="eyebrow">独立于商机阶段</span><h3>客户关系状态</h3><p>同一个客户可以有多个商机；暂停一条商机不等于暂停整个客户，关闭客户也必须保留历史交易与活动。</p></article><article className="panel"><span className="eyebrow">建议规则 · 待业务校准</span><h3>治理触发条件</h3><div className="admission-list"><span>30 天无有效事实 → 风险关注</span><span>暂停必须设置复评日期</span><span>重新激活必须生成下一任务</span><span>关闭必须记录明确原因</span></div></article></section>
       <section className="panel customer-lifecycle-panel"><div className="customer-lifecycle-head"><div><span className="eyebrow">客户生命周期治理</span><h3>关系健康度与处置队列</h3><p>这里治理客户关系，不直接修改任何一条商机的事实阶段。</p></div></div><div className="customer-lifecycle-table"><div className="customer-lifecycle-row head"><span>客户</span><span>生命周期</span><span>最近事实</span><span>下一动作/复评</span><span>处置</span></div>{items.filter((item) => item.lifecycle !== "closed").map((item) => <div className="customer-lifecycle-row" key={item.id}><div><strong>{item.name}</strong><small>{item.form} · {item.owner}</small></div><span className={`customer-lifecycle-pill ${item.lifecycle}`}>{lifecycleLabel[item.lifecycle]}</span><p>{item.lastFact}<small>{item.lastActiveDays >= 999 ? "时间未知" : `${item.lastActiveDays} 天前`}</small></p><div><strong>{item.next}</strong><small>{item.lifecycle === "paused" ? `${item.reviewDate || "待设置"} 复评` : item.pauseReason || "持续经营"}</small></div>{item.ownedByMe ? <div className="row-actions">{item.lifecycle === "paused" ? <button onClick={() => setLifecycleDraft({ id: item.id, action: "reactivate", reason: "重新取得客户经营窗口", reviewDate: "", taskTitle: "确认恢复后的下一动作", taskDueDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10) })}>重新激活</button> : <><button onClick={() => setLifecycleDraft({ id: item.id, action: "attention", reason: "连续缺少有效客户事实", reviewDate: "" })}>关注</button><button onClick={() => setLifecycleDraft({ id: item.id, action: "pause", reason: "客户经营窗口暂不明确", reviewDate: "2026-08-24" })}>暂停</button><button onClick={() => setLifecycleDraft({ id: item.id, action: "close", reason: "客户明确不再合作", reviewDate: "" })}>关闭</button></>}</div> : <span className="read-only-pill">只读</span>}</div>)}</div></section></>}
     {lifecycleDraft && <div className="modal-backdrop" role="presentation"><form className="lifecycle-dialog" role="dialog" aria-modal="true" aria-label="客户生命周期处置" onSubmit={applyCustomerLifecycle}><header><div><span className="eyebrow">客户生命周期处置</span><h3>{lifecycleDraft.action === "reactivate" ? "重新激活客户关系" : lifecycleDraft.action === "pause" ? "暂停客户培育" : lifecycleDraft.action === "attention" ? "标记为需要关注" : "关闭客户关系"}</h3><p>该操作只改变客户关系状态，不会把客户名下商机自动推进、暂停或关闭。</p></div><button type="button" onClick={() => setLifecycleDraft(null)}>×</button></header><label>处置依据<input required value={lifecycleDraft.reason} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reason: event.target.value })} /></label>{lifecycleDraft.action === "pause" && <label>重新评估日期<input type="date" required value={lifecycleDraft.reviewDate} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, reviewDate: event.target.value })} /></label>}{lifecycleDraft.action === "reactivate" && <><label>恢复后的下一任务<input required value={lifecycleDraft.taskTitle || ""} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, taskTitle: event.target.value })} /></label><label>任务截止日期<input type="date" required value={lifecycleDraft.taskDueDate || ""} onChange={(event) => setLifecycleDraft({ ...lifecycleDraft, taskDueDate: event.target.value })} /></label></>}<footer><button type="button" className="secondary-button" onClick={() => setLifecycleDraft(null)}>取消</button><button className="primary-button" type="submit" disabled={lifecycleSaving}>{lifecycleSaving ? "正在写入…" : "确认客户生命周期变化"}</button></footer></form></div>}
   </div>;
 }
 
-function OpportunityList({ onCompose }: { onCompose: () => void }) {
+function OpportunityList({ onCompose, searchTerm }: { onCompose: () => void; searchTerm: string }) {
   const [mode, setMode] = useState<OpportunityMode>("pipeline");
   const [cards, setCards] = useState<PipelineCard[]>([]);
   const [customerKind, setCustomerKind] = useState<"全部" | CustomerKind>("全部");
@@ -1073,6 +1092,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
   const [pipelineCursor, setPipelineCursor] = useState<string | null>(null);
   const [loadingMorePipeline, setLoadingMorePipeline] = useState(false);
   const [pipelinePageError, setPipelinePageError] = useState<string | null>(null);
+  const debouncedSearchTerm = useDebouncedValue(searchTerm.trim());
 
   const visibleCards = cards.filter((card) => (customerKind === "全部" || card.customerKind === customerKind) && (includePaused || card.lifecycle === "active"));
   const activeOpportunities = cards.filter((card) => card.kind === "opportunity" && card.lifecycle === "active");
@@ -1084,7 +1104,8 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
 
   useEffect(() => {
     let active = true;
-    fetch(`/api/crm/data?view=pipeline&scope=${scope}`, { cache: "no-store" })
+    const keywordQuery = debouncedSearchTerm ? `&keyword=${encodeURIComponent(debouncedSearchTerm)}` : "";
+    fetch(`/api/crm/data?view=pipeline&scope=${scope}&limit=20${keywordQuery}`, { cache: "no-store" })
       .then(async (response) => {
         const data = await readCrmApi(response, "潜客与商机查询失败") as CrmRecord;
         const page = pipelinePageFromPayload(data);
@@ -1106,14 +1127,15 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
         setPipelineDataState("error");
       });
     return () => { active = false; };
-  }, [pipelineRefresh, scope]);
+  }, [debouncedSearchTerm, pipelineRefresh, scope]);
 
   async function loadMorePipeline() {
     if (!pipelineCursor || loadingMorePipeline) return;
     setLoadingMorePipeline(true);
     setPipelinePageError(null);
     try {
-      const response = await fetch(`/api/crm/data?view=pipeline&scope=${scope}&cursor=${encodeURIComponent(pipelineCursor)}`, { cache: "no-store" });
+      const keywordQuery = debouncedSearchTerm ? `&keyword=${encodeURIComponent(debouncedSearchTerm)}` : "";
+      const response = await fetch(`/api/crm/data?view=pipeline&scope=${scope}&limit=20${keywordQuery}&cursor=${encodeURIComponent(pipelineCursor)}`, { cache: "no-store" });
       const data = await readCrmApi(response, "下一页潜客与商机查询失败") as CrmRecord;
       const page = pipelinePageFromPayload(data);
       setCards(current => mergeById(current, page.cards));
@@ -1129,7 +1151,8 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
   useEffect(() => {
     if (mode !== "forecast") return;
     let active = true;
-    fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}`, { cache: "no-store" })
+    const keywordQuery = debouncedSearchTerm ? `&keyword=${encodeURIComponent(debouncedSearchTerm)}` : "";
+    fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}&limit=20${keywordQuery}`, { cache: "no-store" })
       .then(async (response) => {
         const data = await readCrmApi(response, "商机预测查询失败") as CrmRecord;
         const mapped = forecastItemsFromPayload(data);
@@ -1148,14 +1171,15 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
         setForecastDataState("error");
       });
     return () => { active = false; };
-  }, [forecastPeriod, mode, forecastRefresh, scope]);
+  }, [debouncedSearchTerm, forecastPeriod, mode, forecastRefresh, scope]);
 
   async function loadMoreForecast() {
     if (!forecastCursor || loadingMoreForecast) return;
     setLoadingMoreForecast(true);
     setForecastPageError(null);
     try {
-      const response = await fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}&cursor=${encodeURIComponent(forecastCursor)}`, { cache: "no-store" });
+      const keywordQuery = debouncedSearchTerm ? `&keyword=${encodeURIComponent(debouncedSearchTerm)}` : "";
+      const response = await fetch(`/api/crm/data?view=forecast&period=${forecastPeriod}&scope=${scope}&limit=20${keywordQuery}&cursor=${encodeURIComponent(forecastCursor)}`, { cache: "no-store" });
       const data = await readCrmApi(response, "下一页预测商机查询失败") as CrmRecord;
       setForecastItems(current => mergeById(current, forecastItemsFromPayload(data)));
       setForecastCursor(nextPageCursor(data.opportunities));
@@ -1416,16 +1440,16 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
         <button className={mode === "forecast" ? "active" : ""} onClick={() => { if (mode !== "forecast") setForecastDataState("loading"); setMode("forecast"); }}><span>◫</span> 业绩与预测</button>
         <button className={mode === "lifecycle" ? "active" : ""} onClick={() => setMode("lifecycle")}><span>◌</span> 生命周期治理</button>
       </div>
-      <div className="scope-actions"><ScopeSelector scope={scope} access={access} onChange={changeScope} /><div className="opportunity-facts"><span><b>{cards.filter((card) => card.kind === "lead" && card.lifecycle === "active").length}</b> 个开放潜客</span><i /><span><b>{activeOpportunities.length}</b> 个开放商机</span><i /><span><b>{pausedCount}</b> 个暂停培育</span></div></div>
+      <div className="scope-actions"><ScopeSelector scope={scope} access={access} onChange={changeScope} /><div className="opportunity-facts" title="这里显示当前已加载的数据，不代表销售易全量"><span><b>{cards.filter((card) => card.kind === "lead" && card.lifecycle === "active").length}</b> 个开放潜客</span><i /><span><b>{activeOpportunities.length}</b> 个开放商机</span><i /><span><b>{pausedCount}</b> 个暂停培育</span></div></div>
     </section>
 
-    <div className="pipeline-source-row"><span className={`data-source-badge ${pipelineDataState}`}>{pipelineDataState === "real" ? "企培 MCP 真实潜客与商机" : pipelineDataState === "loading" ? "正在读取销售漏斗" : "真实数据读取失败"}</span></div>
+    <div className="pipeline-source-row"><span className={`data-source-badge ${pipelineDataState}`}>{pipelineDataState === "real" ? `企培 MCP 真实数据 · 已加载首批${debouncedSearchTerm ? ` · 搜索“${debouncedSearchTerm}”` : ""}` : pipelineDataState === "loading" ? "正在读取首批销售漏斗" : "真实数据读取失败"}</span></div>
     {pipelineDataState === "error" && mode !== "forecast" && <DataFailure message={pipelineError || "潜客与商机查询失败"} onRetry={() => { setPipelineDataState("loading"); setPipelineError(null); setPipelineRefresh((value) => value + 1); }} />}
 
     {mode === "pipeline" && <>
       <section className="pipeline-summary">
-        <article><span>售前客户池</span><strong>{cards.filter((card) => card.lifecycle === "active").length}</strong><small>潜客与开放商机合并查看</small></article>
-        <article><span>负责人</span><strong>{new Set(cards.map((card) => card.owner)).size}</strong><small>{scope === "mine" ? "当前登录人" : "当前范围内销售"}</small></article>
+        <article><span>售前客户池（已加载）</span><strong>{cards.filter((card) => card.lifecycle === "active").length}</strong><small>首批 20 条潜客 + 20 条商机，可继续加载</small></article>
+        <article><span>负责人（已加载）</span><strong>{new Set(cards.map((card) => card.owner)).size}</strong><small>{scope === "mine" ? "当前登录人" : "当前已加载范围"}</small></article>
         <article><span>缺少下一任务</span><strong className="warning-text">{cards.filter((card) => card.kind === "opportunity" && card.nextTask === "补充可验证的下一任务").length}</strong><small>需要补充可验证事实</small></article>
         <article><span>关键活动覆盖</span><strong>—</strong><small>等待统一活动口径</small></article>
       </section>
@@ -1452,7 +1476,7 @@ function OpportunityList({ onCompose }: { onCompose: () => void }) {
                   {card.lifecycle === "active" && card.ownedByMe && <label className="stage-move-control"><span>{card.kind === "lead" ? "转客户并建商机" : "移动阶段"}</span><select aria-label={`移动${card.title}到其他阶段`} value="" onChange={(event) => { if (event.target.value) requestStageMove(card.id, event.target.value as FunnelStage); }}><option value="">选择阶段…</option>{funnelStages.filter((item) => item.id !== "lead" && item.id !== card.stage).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
                   {card.ownedByMe ? <button className="card-action" onClick={onCompose}>{card.kind === "lead" ? "记录处理" : "记录跟进"}<span>→</span></button> : <span className="card-readonly-note">由 {card.owner} 负责</span>}
                 </article>)}
-                {!stageCards.length && <div className="lane-empty">当前筛选下没有客户</div>}
+                {!stageCards.length && <div className="lane-empty">{debouncedSearchTerm ? "当前搜索没有匹配对象" : "当前筛选下没有客户"}</div>}
               </div>
             </section>;
           })}
